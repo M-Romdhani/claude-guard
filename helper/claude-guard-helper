@@ -133,8 +133,14 @@ def build_argv(action_id: str, param: str | None) -> list[str]:
 
     if param is None:
         fail(3, f"action {action_id!r} requires a {spec['param']}")
-    if param not in UNIT_ALLOWLIST:
-        fail(3, f"unit {param!r} is not in the allowlist")
+    # Same normalisation as the caller, applied independently. This is the check
+    # that actually authorises anything; the caller's copy is only for display.
+    unit = param[: -len(".service")] if param.endswith(".service") else param
+    if "." in unit:
+        fail(3, f"unit {param!r} is not a .service unit")
+    if unit not in UNIT_ALLOWLIST:
+        fail(3, f"unit {unit!r} is not in the allowlist")
+    param = unit
 
     return [resolve(spec["argv"][0])] + [a.format(unit=param) for a in spec["argv"][1:]]
 

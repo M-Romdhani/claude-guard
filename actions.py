@@ -30,6 +30,20 @@ UNIT_ALLOWLIST = {
 }
 
 
+def normalise_unit(name: str) -> str | None:
+    """Strip a trailing .service, or reject a unit of any other type.
+
+    `systemctl disable foo` and `systemctl disable foo.service` mean the same
+    thing, and the model writes it both ways, so both must resolve to the same
+    allowlist entry. Other suffixes are NOT interchangeable -- foo.socket is a
+    different unit from foo.service, so an allowlist entry for one must never
+    silently authorise the other.
+    """
+    if name.endswith(".service"):
+        name = name[: -len(".service")]
+    return None if "." in name else name
+
+
 @dataclass(frozen=True)
 class Step:
     action_id: str
@@ -65,10 +79,10 @@ def _one(tokens: list[str]) -> list[Step] | None:
             return [Step("reboot", None, "Restart the machine")]
         if verbs[0] in ("disable", "mask"):
             action = "service-disable" if verbs[0] == "disable" else "service-mask"
-            units = verbs[1:]
+            units = [normalise_unit(u) for u in verbs[1:]]
             # One command may name several units; each becomes its own step, so
             # each is checked and authorised on its own terms.
-            if units and all(u in UNIT_ALLOWLIST for u in units):
+            if units and all(u is not None and u in UNIT_ALLOWLIST for u in units):
                 verb = "Stop and disable" if action == "service-disable" else "Stop and mask"
                 return [Step(action, u, f"{verb} {u}") for u in units]
         return None
