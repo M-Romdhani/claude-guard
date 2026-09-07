@@ -49,7 +49,21 @@ def _invoking_home() -> Path:
     return Path.home()
 
 
-ENV_FILE = _invoking_home() / ".config" / "claude-guard" / "env"
+def _env_file() -> Path:
+    """Where the API key lives.
+
+    Checked in order: an explicit override, the invoking user's config, then the
+    system-wide root-owned file. The last one matters for the systemd timer,
+    which runs as root with no SUDO_USER and no home to speak of.
+    """
+    override = os.environ.get("CLAUDE_GUARD_ENV_FILE")
+    if override:
+        return Path(override)
+    user_file = _invoking_home() / ".config" / "claude-guard" / "env"
+    return user_file if user_file.is_file() else Path("/etc/claude-guard/env")
+
+
+ENV_FILE = _env_file()
 
 
 def load_env_file(path: Path = ENV_FILE) -> None:

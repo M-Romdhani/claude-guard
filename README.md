@@ -36,6 +36,31 @@ Three layers, deliberately separated:
 Detection stays deterministic; the model only ever does interpretation. That is
 what makes the output reproducible enough to trust.
 
+## Scheduled scanning (systemd timer)
+
+Turns Guard from something you remember to run into something that watches.
+
+```bash
+sudo ./install-timer.sh          # daily scan, desktop notification on findings
+sudo ./install-timer.sh --uninstall
+```
+
+The timer runs as root so the scan can read firewall rules and unit state -- the
+things a plain user run cannot see. It writes `/var/lib/claude-guard/latest.json`,
+keeps the last 30 reports so you can watch drift over time, and raises a desktop
+notification only when something is at medium severity or above.
+
+The API key is copied to `/etc/claude-guard/env` (root-owned, mode 600) so the
+headless run does not depend on any user's home directory.
+
+```bash
+sudo systemctl start claude-guard.service          # run one now
+journalctl -u claude-guard.service -n 30           # what happened
+sudo cat /var/lib/claude-guard/latest.json         # the report
+```
+
+**The timer never applies a fix.** It reports and notifies; you decide.
+
 ## Security properties
 
 These are the reasons the code is shaped the way it is:
