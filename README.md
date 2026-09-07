@@ -235,3 +235,7 @@ is fractions of a cent; a daily cron job is negligible. If you run it often:
   `systemd-analyze security` all slot straight into `COLLECTORS`.
 - **Privacy.** This sends system state to an API. Say so plainly in your UI, and
   consider redacting hostnames, usernames and MACs before sending.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
