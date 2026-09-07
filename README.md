@@ -72,6 +72,17 @@ run**, with "Nothing has been sent yet" until collection finishes -- the same
 trick as the privacy notice, done at the moment it is true. Applying a fix shows
 one row per privileged action, each ticking over as it completes.
 
+The summary is a headline plus standalone one-line points rather than a
+paragraph -- a block of bold prose does not get read.
+
+Decisions persist across scans in `~/.local/state/claude-guard/decisions.json`.
+Applying a fix records it; a finding can also be ignored. Findings have no id of
+their own and the model rewrites titles between runs, so the key is derived from
+what the fix *does* (the helper action ids it maps to), which survives being
+reworded. A finding recorded as applied that shows up again is badged **came
+back** -- either the fix did not hold or something switched it back on, and both
+are worth knowing. Delete that file to start over.
+
 Not yet built, from the design: history/drift, the first-run key screen, timer
 settings, and in-place confirmation instead of a dialog.
 

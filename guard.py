@@ -109,7 +109,10 @@ def veto(command: str) -> str | None:
 
 def print_report(report: brain.Report) -> None:
     print(f"\n{BOLD}Claude Guard{RESET}  ->  {BADGE.get(report.overall, report.overall)}\n")
-    print(f"{report.summary}\n")
+    print(f"{report.headline}\n")
+    for point in report.points:
+        print(f"  - {point}")
+    print()
 
     if not report.findings:
         print(f"{DIM}No findings.{RESET}")

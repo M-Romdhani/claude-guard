@@ -48,6 +48,9 @@ How to judge what you see:
   hardening. Do not inflate severity to seem thorough.
 - Say clearly when something is fine. A short report with two findings is better
   than a padded one with ten.
+- headline is one sentence. Each entry in points stands alone and is read on its
+  own line, so do not write a paragraph and chop it up: no "also", no "however",
+  no sentence that only makes sense after the one before it.
 
 For every finding, fix_command must be a single, safe, copy-pasteable shell
 command, or an empty string when no action is warranted. Never propose a command
@@ -65,7 +68,10 @@ class Finding(BaseModel):
 
 class Report(BaseModel):
     overall: Literal["good", "needs_attention", "at_risk"]
-    summary: str = Field(description="Two or three sentences a non-expert can act on")
+    headline: str = Field(description="One short sentence: the overall verdict, no detail")
+    points: list[str] = Field(
+        description="2-4 standalone observations, each one line, each readable on its own. "
+                    "Not a paragraph split up -- separate points that do not depend on order.")
     findings: list[Finding]
 
 

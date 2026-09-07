@@ -35,6 +35,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 import actions  # noqa: E402
+import decisions  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 PYTHON = HERE / ".venv" / "bin" / "python"
@@ -167,6 +168,16 @@ class GuardWindow(Adw.ApplicationWindow):
             copy_btn = Gtk.Button(label="Copy command")
             copy_btn.connect("clicked", lambda _b: self.get_clipboard().set(cmd))
             buttons.append(copy_btn)
+
+            current = decisions.status_of(finding)
+            if current == decisions.IGNORED:
+                un = Gtk.Button(label="Stop ignoring")
+                un.connect("clicked", lambda _b, fi=finding: self.decide(fi, None))
+                buttons.append(un)
+            else:
+                ign = Gtk.Button(label="Ignore this finding")
+                ign.connect("clicked", lambda _b, fi=finding: self.decide(fi, decisions.IGNORED))
+                buttons.append(ign)
             box.append(buttons)
 
             h = Gtk.Label(label=hint, xalign=0, wrap=True)
@@ -279,19 +290,28 @@ class GuardWindow(Adw.ApplicationWindow):
         act = [f for f in findings if f["severity"] in NEEDS_ACTION]
         info = [f for f in findings if f["severity"] not in NEEDS_ACTION]
 
+        # Older cached reports carry a single `summary` string.
+        headline = r.get("headline") or r.get("summary", "")
+        points = r.get("points") or []
+
         if not act:
-            status = Adw.StatusPage(
+            self.body.append(Adw.StatusPage(
                 icon_name="security-high-symbolic",
                 title="Nothing needs your attention",
-                description=r.get("summary", ""), vexpand=True)
-            self.body.append(status)
+                description=headline, vexpand=True))
+            if points:
+                self.body.append(self._points(points))
         else:
             head = Gtk.Label(label=label.upper(), xalign=0)
             head.add_css_class("caption-heading")
             self.body.append(head)
-            summary = Gtk.Label(label=r.get("summary", ""), xalign=0, wrap=True)
+            summary = Gtk.Label(label=headline, xalign=0, wrap=True)
             summary.add_css_class("title-4")
             self.body.append(summary)
+            if points:
+                self.body.append(self._points(points))
+
+        badges = decisions.annotate(findings)
 
         for group_title, items in (
             (f"{len(act)} need action", act),
@@ -304,11 +324,33 @@ class GuardWindow(Adw.ApplicationWindow):
                 row = Adw.ActionRow(title=f["title"], subtitle=f["what_it_means"],
                                     activatable=True, subtitle_lines=2)
                 row.add_prefix(dot(f["severity"]))
+                badge = badges.get(decisions.key_for(f))
+                if badge:
+                    # "came back" means a fix was applied and the finding returned --
+                    # either it did not hold or something switched it back on.
+                    tag = Gtk.Label(label=badge)
+                    tag.add_css_class("caption")
+                    tag.add_css_class("warning" if badge == "came back" else "dim-label")
+                    row.add_suffix(tag)
                 row.add_suffix(Gtk.Label(label=f["severity"], css_classes=["dim-label"]))
                 row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
                 row.connect("activated", lambda _r, fi=f: self.nav.push(self._detail_page(fi)))
                 group.add(row)
             self.body.append(group)
+
+    def _points(self, points: list[str]) -> Gtk.Widget:
+        """One line per observation. A wall of bold prose is not read; a short
+        list is. Each point stands alone, so order carries no meaning."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
+        for text in points:
+            row = Gtk.Box(spacing=10, valign=Gtk.Align.START)
+            bullet = Gtk.Label(label="\u2022", valign=Gtk.Align.START)
+            bullet.add_css_class("dim-label")
+            row.append(bullet)
+            label = Gtk.Label(label=text, xalign=0, wrap=True, hexpand=True)
+            row.append(label)
+            box.append(row)
+        return box
 
     # ---------- actions ----------
 
@@ -321,10 +363,18 @@ class GuardWindow(Adw.ApplicationWindow):
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("apply", "Apply")
         dialog.set_response_appearance("apply", Adw.ResponseAppearance.SUGGESTED)
-        dialog.connect("response", lambda _d, resp: resp == "apply" and self.apply(plan))
+        dialog.connect("response", lambda _d, resp: resp == "apply" and self.apply(finding, plan))
         dialog.present()
 
-    def apply(self, plan: list) -> None:
+    def decide(self, finding: dict, status: str | None) -> None:
+        if status is None:
+            decisions.forget(finding)
+        else:
+            decisions.record(finding, status)
+        self.nav.pop()
+        self.render()
+
+    def apply(self, finding: dict, plan: list) -> None:
         self.nav.pop()          # back to the report, where progress is shown
         self.show_steps(plan)
         if self.step_rows:
@@ -340,6 +390,8 @@ class GuardWindow(Adw.ApplicationWindow):
                 if not ok:
                     failures.append(step.summary)
                 GLib.idle_add(self.mark_step, i, ok, True)
+            if not failures:
+                decisions.record(finding, decisions.APPLIED)
             GLib.idle_add(self.after_apply, failures)
 
         threading.Thread(target=work, daemon=True).start()
