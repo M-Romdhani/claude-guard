@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """Claude Guard -- GTK4/libadwaita desktop app.
 
 Runs as your normal user and never as root. It renders the same report the CLI
@@ -15,7 +15,19 @@ import subprocess
 import threading
 from pathlib import Path
 
-import gi
+try:
+    import gi
+except ModuleNotFoundError:  # almost always: launched from an activated venv
+    import sys as _sys
+    _sys.exit(
+        "Claude Guard's window needs PyGObject, which is a system package and is\n"
+        "not inside .venv. You are most likely running this from an activated\n"
+        "virtualenv, where `python3` means the venv's interpreter.\n\n"
+        "Run it with the system interpreter instead:\n"
+        "    /usr/bin/python3 app.py\n"
+        "or leave the venv first with:  deactivate\n\n"
+        "(The venv is still used internally for the scan itself.)"
+    )
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")

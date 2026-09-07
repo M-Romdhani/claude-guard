@@ -41,12 +41,21 @@ what makes the output reproducible enough to trust.
 ## Desktop app
 
 ```bash
-python3 app.py
+./install-desktop.sh     # adds it to the applications menu (no sudo)
 ```
 
-Use the **system** `python3`, not the one in `.venv` -- GTK/PyGObject is a system
-package. The app launches the venv's interpreter internally for the scan itself;
-that split is deliberate.
+Then search for **Claude Guard** in the activities overview. From a terminal:
+
+```bash
+/usr/bin/python3 app.py
+```
+
+Spell out `/usr/bin/python3`. GTK/PyGObject is a system package and is not in
+`.venv`, and inside an activated venv both `python3` and `#!/usr/bin/env python3`
+resolve to the venv's interpreter -- so "use the system python" is not advice a
+shell can follow. Launched the wrong way the app now says so instead of raising
+`ModuleNotFoundError: No module named 'gi'`. The venv is still used internally
+for the scan; that split is deliberate.
 
 GTK4 + libadwaita. Runs as your normal user and never as root. Findings are
 grouped into "need action" and "for information" rather than shown as five
