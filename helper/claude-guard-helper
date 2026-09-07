@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Privileged helper for Claude Guard. Invoked through pkexec; never run directly.
+
+THE CENTRAL RULE: this helper never accepts a command to run.
+
+It accepts an *action id* from a fixed table and, for parameterised actions, a
+value checked against an allowlist. The command string the model wrote is used
+to *look up* an action and is otherwise thrown away -- it is displayed to the
+human, never executed.
+
+That is the difference between this and a sudo wrapper. The CLI's FORBIDDEN
+deny-list is a backstop and fails open: anything nobody thought of gets through.
+An allowlist fails closed. A GUI that can run privileged commands needs the
+stronger of the two, because the string originates from a language model.
+
+Exit codes: 0 ok, 2 unknown action, 3 rejected parameter, 4 command failed.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import syslog
+
+TRUSTED_DIRS = ("/usr/sbin", "/usr/bin", "/sbin", "/bin")
+
+# Units this helper will stop or mask. Network-facing or clearly leftover
+# services only -- never anything the desktop or boot depends on. Adding a unit
+# here is a security decision; do not widen it to "any unit the model names".
+UNIT_ALLOWLIST = {
+    "smbd", "nmbd", "samba-ad-dc",       # file sharing / domain controller
+    "gnome-remote-desktop", "vino-server", "xrdp",
+    "ssh", "sshd",                        # remote login
+    "openvpn", "sssd",                    # VPN / enterprise directory
+    "ubiquity",                           # the installer, on an installed system
+    "cups-browsed", "avahi-daemon",       # discovery
+    "vsftpd", "telnetd", "rpcbind", "nfs-server",
+}
+
+ACTIONS = {
+    "ufw-enable": {
+        "argv": ["ufw", "--force", "enable"],
+        "summary": "Turn the firewall on (deny incoming, allow outgoing)",
+    },
+    "apt-update": {
+        "argv": ["apt-get", "update"],
+        "summary": "Refresh the package lists",
+    },
+    "apt-upgrade": {
+        "argv": ["apt-get", "upgrade", "-y"],
+        "summary": "Install pending package updates",
+        # Long-running and can break a desktop mid-flight. The caller is
+        # expected to show this output live, not hide it behind a spinner.
+        "streams": True,
+    },
+    "service-disable": {
+        "argv": ["systemctl", "disable", "--now", "{unit}"],
+        "param": "unit",
+        "summary": "Stop a service and prevent it starting at boot",
+    },
+    "service-mask": {
+        "argv": ["systemctl", "mask", "--now", "{unit}"],
+        "param": "unit",
+        "summary": "Stop a service and make it impossible to start accidentally",
+    },
+    "reboot": {
+        "argv": ["systemctl", "reboot"],
+        "summary": "Restart the machine",
+    },
+}
+
+
+def fail(code: int, message: str) -> "None":
+    syslog.syslog(syslog.LOG_WARNING, f"refused: {message}")
+    print(json.dumps({"ok": False, "error": message}), file=sys.stderr)
+    raise SystemExit(code)
+
+
+def resolve(binary: str) -> str:
+    """Absolute path from a trusted directory only -- never inherit PATH."""
+    for d in TRUSTED_DIRS:
+        candidate = os.path.join(d, binary)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    fail(3, f"{binary} not found in a trusted directory")
+
+
+def build_argv(action_id: str, param: str | None) -> list[str]:
+    spec = ACTIONS.get(action_id)
+    if spec is None:
+        fail(2, f"unknown action {action_id!r}")
+
+    if "param" not in spec:
+        if param is not None:
+            fail(3, f"action {action_id!r} takes no parameter")
+        return [resolve(spec["argv"][0])] + spec["argv"][1:]
+
+    if param is None:
+        fail(3, f"action {action_id!r} requires a {spec['param']}")
+    if param not in UNIT_ALLOWLIST:
+        fail(3, f"unit {param!r} is not in the allowlist")
+
+    return [resolve(spec["argv"][0])] + [a.format(unit=param) for a in spec["argv"][1:]]
+
+
+def main() -> int:
+    syslog.openlog("claude-guard-helper")
+
+    if len(sys.argv) < 2:
+        fail(2, "usage: claude-guard-helper <action-id> [parameter]")
+    if len(sys.argv) > 3:
+        fail(3, "at most one parameter is accepted")
+
+    action_id = sys.argv[1]
+    param = sys.argv[2] if len(sys.argv) == 3 else None
+
+    if action_id == "--list":
+        print(json.dumps({"actions": {k: v["summary"] for k, v in ACTIONS.items()},
+                          "units": sorted(UNIT_ALLOWLIST)}, indent=2))
+        return 0
+
+    argv = build_argv(action_id, param)
+    caller = os.environ.get("PKEXEC_UID", "unknown")
+    syslog.syslog(syslog.LOG_NOTICE, f"uid={caller} action={action_id} param={param} argv={argv}")
+
+    # shell=False, absolute path, fixed argv. No string is ever parsed by a shell.
+    result = subprocess.run(argv, env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"})
+    syslog.syslog(syslog.LOG_NOTICE, f"action={action_id} exit={result.returncode}")
+
+    if result.returncode != 0:
+        print(json.dumps({"ok": False, "action": action_id, "exit": result.returncode}), file=sys.stderr)
+        return 4
+    print(json.dumps({"ok": True, "action": action_id, "ran": argv}))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -71,6 +71,43 @@ sudo ./install-timer.sh --uninstall   # stop and remove the timer
 
 **The timer never applies a fix.** It reports and notifies; you decide.
 
+## Privileged helper (for the desktop app)
+
+The GUI runs as your normal user and never as root. Privileged work goes through
+a small helper authorised by polkit, so the authentication prompt is your
+desktop's own and no password ever reaches Claude Guard.
+
+```bash
+sudo helper/install-helper.sh          # installs the helper + polkit policy
+sudo helper/install-helper.sh --uninstall
+helper/claude-guard-helper --list      # what it can do
+```
+
+**The helper never accepts a command to run.** It takes an *action id* from a
+fixed table, plus -- for the parameterised actions -- a unit name checked against
+an allowlist. The command string the model wrote is used only to *look up* an
+action, then discarded:
+
+```
+model says:  sudo systemctl disable --now smbd nmbd
+mapped to:   service-disable(smbd), service-disable(nmbd)
+executed:    /usr/bin/systemctl disable --now smbd     (fixed argv, no shell)
+             /usr/bin/systemctl disable --now nmbd
+```
+
+Anything that does not map -- `ufw disable`, `systemctl disable systemd-logind`,
+`rm -rf ...`, a piped download -- is not run at all. The UI shows the command and
+the user runs it themselves. **Giving up is the normal, safe outcome.**
+
+This is deliberately stronger than the CLI's `FORBIDDEN` deny-list. A deny-list
+fails open: whatever nobody anticipated gets through. An allowlist fails closed.
+When the string comes from a language model and the target is root, that
+difference is the whole design.
+
+Each action re-authenticates (`auth_admin`, not `auth_admin_keep`) -- a cached
+root credential inside a tool that runs privileged commands is precisely what
+brief local access would wait for.
+
 ## Security properties
 
 These are the reasons the code is shaped the way it is:
