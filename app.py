@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 import threading
 from pathlib import Path
 
@@ -39,6 +40,13 @@ HERE = Path(__file__).resolve().parent
 PYTHON = HERE / ".venv" / "bin" / "python"
 CACHED_REPORT = Path("/var/lib/claude-guard/latest.json")
 HELPER = "/usr/libexec/claude-guard-helper"
+
+# Shown live while collecting, so "read-only" is inspectable rather than asserted.
+try:
+    from collectors import COLLECTORS
+    COLLECTOR_CMD = {k: " ".join(v[1]) for k, v in COLLECTORS.items()}
+except Exception:
+    COLLECTOR_CMD = {}
 
 NEEDS_ACTION = ("critical", "high", "medium")
 ACCENT = {"critical": "#c01c28", "high": "#ff7b63", "medium": "#f5c211",
@@ -172,6 +180,91 @@ class GuardWindow(Adw.ApplicationWindow):
         toolbar.set_content(Gtk.ScrolledWindow(vexpand=True, child=box))
         return Adw.NavigationPage(title="Finding", child=toolbar)
 
+    # ---------- progress ----------
+
+    def show_progress(self, title: str, note: str) -> None:
+        """Replace the report with a live view of what is happening right now.
+
+        A security tool that goes quiet while running privileged commands is
+        unsettling -- you cannot tell working from hung. Collection has real
+        progress to show, so show it.
+        """
+        while (child := self.body.get_first_child()) is not None:
+            self.body.remove(child)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14,
+                      margin_top=48, margin_start=24, margin_end=24, valign=Gtk.Align.START)
+        self.p_title = Gtk.Label(label=title, xalign=0)
+        self.p_title.add_css_class("title-3")
+        box.append(self.p_title)
+
+        self.p_bar = Gtk.ProgressBar(show_text=False)
+        box.append(self.p_bar)
+
+        self.p_step = Gtk.Label(label="", xalign=0, wrap=True)
+        self.p_step.add_css_class("monospace")
+        self.p_step.add_css_class("dim-label")
+        box.append(self.p_step)
+
+        self.p_note = Gtk.Label(label=note, xalign=0, wrap=True)
+        self.p_note.add_css_class("caption")
+        self.p_note.add_css_class("dim-label")
+        box.append(self.p_note)
+        self.body.append(box)
+
+    def set_progress(self, fraction: float | None, step: str, note: str | None = None) -> bool:
+        if not hasattr(self, "p_bar"):
+            return False
+        if fraction is None:
+            self.p_bar.pulse()
+        else:
+            self.p_bar.set_fraction(fraction)
+        self.p_step.set_text(step)
+        if note is not None:
+            self.p_note.set_text(note)
+        return False
+
+    def show_steps(self, plan: list) -> None:
+        """One row per privileged action, updated as each finishes."""
+        while (child := self.body.get_first_child()) is not None:
+            self.body.remove(child)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14,
+                      margin_top=40, margin_start=24, margin_end=24, valign=Gtk.Align.START)
+        heading = Gtk.Label(label=f"Applying {len(plan)} action{'s' if len(plan) > 1 else ''}", xalign=0)
+        heading.add_css_class("title-3")
+        box.append(heading)
+
+        group = Adw.PreferencesGroup()
+        self.step_rows = []
+        for step in plan:
+            row = Adw.ActionRow(title=step.summary)
+            spinner = Gtk.Spinner(valign=Gtk.Align.CENTER)
+            row.add_suffix(spinner)
+            self.step_rows.append((row, spinner))
+            group.add(row)
+        box.append(group)
+
+        note = Gtk.Label(
+            label="Your desktop asks for your password once per action -- Claude Guard "
+                  "does not cache it, so a two-part fix prompts twice.",
+            xalign=0, wrap=True)
+        note.add_css_class("caption")
+        note.add_css_class("dim-label")
+        box.append(note)
+        self.body.append(box)
+
+    def mark_step(self, index: int, ok: bool, running_next: bool) -> bool:
+        row, spinner = self.step_rows[index]
+        spinner.stop()
+        row.remove(spinner)
+        icon = Gtk.Image(icon_name="object-select-symbolic" if ok else "dialog-error-symbolic")
+        row.add_suffix(icon)
+        row.set_subtitle("done" if ok else "did not complete")
+        if running_next and index + 1 < len(self.step_rows):
+            self.step_rows[index + 1][1].start()
+        return False
+
     # ---------- rendering ----------
 
     def render(self) -> None:
@@ -232,14 +325,21 @@ class GuardWindow(Adw.ApplicationWindow):
         dialog.present()
 
     def apply(self, plan: list) -> None:
+        self.nav.pop()          # back to the report, where progress is shown
+        self.show_steps(plan)
+        if self.step_rows:
+            self.step_rows[0][1].start()
+
         def work():
             failures = []
-            for step in plan:
+            for i, step in enumerate(plan):
                 argv = ["pkexec", HELPER, step.action_id]
                 if step.param:
                     argv.append(step.param)
-                if subprocess.run(argv, capture_output=True).returncode != 0:
+                ok = subprocess.run(argv, capture_output=True).returncode == 0
+                if not ok:
                     failures.append(step.summary)
+                GLib.idle_add(self.mark_step, i, ok, True)
             GLib.idle_add(self.after_apply, failures)
 
         threading.Thread(target=work, daemon=True).start()
@@ -272,12 +372,18 @@ class GuardWindow(Adw.ApplicationWindow):
         self.subtitle.set_subtitle(
             "Authenticating…" if privileged else "Reading system state…")
 
+        self.show_progress(
+            "Authenticating…" if privileged else "Reading system state",
+            "Nothing has been sent yet.")
+
         def work():
             argv = [str(PYTHON), str(HERE / "guard.py"), "--json"]
             observations = None
             if privileged:
                 # Root collects; this process still makes the API call and parses
                 # the reply, so nothing from the network is parsed with privilege.
+                GLib.idle_add(self.set_progress, None, "pkexec claude-guard-helper collect",
+                              "Waiting for your password.")
                 collected = subprocess.run(["pkexec", HELPER, "collect"],
                                            capture_output=True, text=True)
                 if collected.returncode != 0:
@@ -285,8 +391,34 @@ class GuardWindow(Adw.ApplicationWindow):
                     return
                 observations = collected.stdout
                 argv += ["--observations", "-"]
-            proc = subprocess.run(argv, input=observations, capture_output=True, text=True)
-            GLib.idle_add(self.scan_done, proc)
+
+            # stdout to a file so a full pipe can never deadlock us while we
+            # follow stderr line by line for progress.
+            with tempfile.TemporaryFile("w+") as out:
+                proc = subprocess.Popen(argv, stdout=out, stderr=subprocess.PIPE,
+                                        stdin=subprocess.PIPE if observations else None,
+                                        text=True)
+                if observations:
+                    proc.stdin.write(observations)
+                    proc.stdin.close()
+                for line in proc.stderr:
+                    line = line.strip()
+                    if line.startswith("@@PROGRESS"):
+                        counter, name = line.split(None, 2)[1:]
+                        done, total = (int(x) for x in counter.split("/"))
+                        GLib.idle_add(self.set_progress, done / total,
+                                      COLLECTOR_CMD.get(name, name),
+                                      f"{done} of {total} read-only commands. Nothing has been sent yet.")
+                    elif line.startswith("@@PHASE analysing"):
+                        GLib.idle_add(self.set_progress, None, "",
+                                      "Sending the collected output to claude-opus-5 "
+                                      "and waiting for its reading of it.")
+                proc.wait()
+                out.seek(0)
+                stdout = out.read()
+
+            GLib.idle_add(self.scan_done,
+                          subprocess.CompletedProcess(argv, proc.returncode, stdout, ""))
 
         threading.Thread(target=work, daemon=True).start()
 

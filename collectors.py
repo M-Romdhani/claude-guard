@@ -80,5 +80,17 @@ def run_one(name: str) -> Observation:
         return Observation(name, description, command, f"({exc})", False)
 
 
-def collect_all() -> list[Observation]:
-    return [run_one(name) for name in COLLECTORS]
+def collect_all(on_progress=None) -> list[Observation]:
+    """Run every collector, optionally reporting progress as each one finishes.
+
+    on_progress(index, total, name) is called after each command so a caller can
+    show which command is running. Collection is the part a user can be shown
+    honestly -- the interpretation step afterwards has no measurable progress.
+    """
+    total = len(COLLECTORS)
+    results = []
+    for i, name in enumerate(COLLECTORS, start=1):
+        results.append(run_one(name))
+        if on_progress is not None:
+            on_progress(i, total, name)
+    return results

@@ -67,6 +67,11 @@ polkit helper, so the password prompt is your desktop's own. A command that does
 and says plainly that Claude Guard will not run it -- the fail-closed path is a
 normal explained state, not an error.
 
+While a scan runs the app shows a progress bar and **the actual command being
+run**, with "Nothing has been sent yet" until collection finishes -- the same
+trick as the privacy notice, done at the moment it is true. Applying a fix shows
+one row per privileged action, each ticking over as it completes.
+
 Not yet built, from the design: history/drift, the first-run key screen, timer
 settings, and in-place confirmation instead of a dialog.
 

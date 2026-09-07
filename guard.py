@@ -195,8 +195,14 @@ def main() -> int:
         print(f"{DIM}Using {len(observations)} pre-collected observations...{RESET}", file=sys.stderr)
     else:
         print(f"{DIM}Collecting system state (read-only)...{RESET}", file=sys.stderr)
-        observations = collect_all()
 
+        def progress(i, total, name):
+            # Parsed by the GUI; harmless noise in a terminal.
+            print(f"@@PROGRESS {i}/{total} {name}", file=sys.stderr, flush=True)
+
+        observations = collect_all(on_progress=progress)
+
+    print("@@PHASE analysing", file=sys.stderr, flush=True)
     print(f"{DIM}Asking {args.model} to interpret it...{RESET}", file=sys.stderr)
     try:
         report = brain.analyse(observations, model=args.model)
