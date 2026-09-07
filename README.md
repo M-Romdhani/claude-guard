@@ -8,6 +8,8 @@ matters and what single command to run.**
 ## Install
 
 ```bash
+git clone https://github.com/M-Romdhani/claude-guard.git
+cd claude-guard
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 export ANTHROPIC_API_KEY=sk-ant-...    # or run: ant auth login
@@ -41,9 +43,13 @@ what makes the output reproducible enough to trust.
 Turns Guard from something you remember to run into something that watches.
 
 ```bash
-sudo ./install-timer.sh          # daily scan, desktop notification on findings
-sudo ./install-timer.sh --uninstall
+sudo ./install-timer.sh
 ```
+
+**That is the only command you need.** From then on the scan runs daily by
+itself and notifies you if something needs attention -- there is nothing to
+remember and nothing else to start. Everything below is optional: ways to check
+on it, or to remove it.
 
 The timer runs as root so the scan can read firewall rules and unit state -- the
 things a plain user run cannot see. It writes `/var/lib/claude-guard/latest.json`,
@@ -57,6 +63,10 @@ headless run does not depend on any user's home directory.
 sudo systemctl start claude-guard.service          # run one now
 journalctl -u claude-guard.service -n 30           # what happened
 sudo cat /var/lib/claude-guard/latest.json         # the report
+```
+
+```bash
+sudo ./install-timer.sh --uninstall   # stop and remove the timer
 ```
 
 **The timer never applies a fix.** It reports and notifies; you decide.
