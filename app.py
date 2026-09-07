@@ -65,9 +65,15 @@ class GuardWindow(Adw.ApplicationWindow):
     def _report_page(self) -> Adw.NavigationPage:
         self.scan_btn = Gtk.Button(label="Scan now")
         self.scan_btn.connect("clicked", lambda _b: self.run_scan())
+        self.full_btn = Gtk.Button(label="Full scan…")
+        self.full_btn.set_tooltip_text(
+            "Collects with administrator access so firewall rules and unit state "
+            "are visible. Only the collectors run as root; the API call does not.")
+        self.full_btn.connect("clicked", lambda _b: self.run_scan(privileged=True))
 
         header = Adw.HeaderBar()
         header.pack_start(self.scan_btn)
+        header.pack_start(self.full_btn)
         self.subtitle = Adw.WindowTitle(title="Claude Guard", subtitle="No scan yet")
         header.set_title_widget(self.subtitle)
 
@@ -248,19 +254,33 @@ class GuardWindow(Adw.ApplicationWindow):
                 title="No scan yet",
                 description="Press Scan now to check this machine.", vexpand=True))
 
-    def run_scan(self) -> None:
+    def run_scan(self, privileged: bool = False) -> None:
         self.scan_btn.set_sensitive(False)
-        self.subtitle.set_subtitle("Reading system state…")
+        self.full_btn.set_sensitive(False)
+        self.subtitle.set_subtitle(
+            "Authenticating…" if privileged else "Reading system state…")
 
         def work():
-            proc = subprocess.run([str(PYTHON), str(HERE / "guard.py"), "--json"],
-                                  capture_output=True, text=True)
+            argv = [str(PYTHON), str(HERE / "guard.py"), "--json"]
+            observations = None
+            if privileged:
+                # Root collects; this process still makes the API call and parses
+                # the reply, so nothing from the network is parsed with privilege.
+                collected = subprocess.run(["pkexec", HELPER, "collect"],
+                                           capture_output=True, text=True)
+                if collected.returncode != 0:
+                    GLib.idle_add(self.scan_done, collected)
+                    return
+                observations = collected.stdout
+                argv += ["--observations", "-"]
+            proc = subprocess.run(argv, input=observations, capture_output=True, text=True)
             GLib.idle_add(self.scan_done, proc)
 
         threading.Thread(target=work, daemon=True).start()
 
     def scan_done(self, proc) -> bool:
         self.scan_btn.set_sensitive(True)
+        self.full_btn.set_sensitive(True)
         if proc.returncode != 0:
             self.subtitle.set_subtitle("Scan failed")
             return False

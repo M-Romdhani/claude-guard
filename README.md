@@ -127,6 +127,27 @@ fails open: whatever nobody anticipated gets through. An allowlist fails closed.
 When the string comes from a language model and the target is root, that
 difference is the whole design.
 
+### Privileged scanning, without root touching the network
+
+A plain user run cannot read firewall rules, so it reports "could not be read"
+every time -- noise that teaches people to ignore findings. The `collect` action
+fixes that without handing the whole scan to root:
+
+```
+pkexec helper collect     root runs the read-only collectors, prints JSON
+        |
+        v
+guard.py --observations - unprivileged: makes the API call, parses the reply
+```
+
+Root reads the machine; it never parses anything that arrived over the network.
+That is the whole reason this is a `collect` action rather than a `scan` action.
+The helper imports its collector table from a fixed root-owned path and refuses
+to run if that file is writable by anyone else -- a caller-supplied path would
+let any user choose what runs as root.
+
+In the app this is the **Full scan…** button; `Scan now` stays unprivileged.
+
 Each action re-authenticates (`auth_admin`, not `auth_admin_keep`) -- a cached
 root credential inside a tool that runs privileged commands is precisely what
 brief local access would wait for.

@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 import brain
-from collectors import collect_all
+from collectors import Observation, collect_all
 
 BOLD, DIM, RESET = "\033[1m", "\033[2m", "\033[0m"
 COLOUR = {
@@ -169,6 +169,10 @@ def main() -> int:
     parser.add_argument("--model", default=brain.DEFAULT_MODEL,
                         help=f"model id (default: {brain.DEFAULT_MODEL})")
     parser.add_argument("--json", action="store_true", help="print the report as JSON and exit")
+    parser.add_argument("--observations", metavar="PATH",
+                        help="read collector output from PATH ('-' for stdin) instead of collecting. "
+                             "Lets the privileged helper do the collecting while this process, "
+                             "running unprivileged, makes the API call and parses the reply")
     parser.add_argument("--apply", action="store_true",
                         help="after reporting, offer each fix with a separate confirmation")
     args = parser.parse_args()
@@ -181,8 +185,17 @@ def main() -> int:
               f"  chmod 600 {ENV_FILE}\n", file=sys.stderr)
         return 1
 
-    print(f"{DIM}Collecting system state (read-only)...{RESET}", file=sys.stderr)
-    observations = collect_all()
+    if args.observations:
+        raw = sys.stdin.read() if args.observations == "-" else Path(args.observations).read_text()
+        try:
+            observations = [Observation(**o) for o in json.loads(raw)]
+        except (ValueError, TypeError) as exc:
+            print(f"Could not read observations: {exc}", file=sys.stderr)
+            return 1
+        print(f"{DIM}Using {len(observations)} pre-collected observations...{RESET}", file=sys.stderr)
+    else:
+        print(f"{DIM}Collecting system state (read-only)...{RESET}", file=sys.stderr)
+        observations = collect_all()
 
     print(f"{DIM}Asking {args.model} to interpret it...{RESET}", file=sys.stderr)
     try:

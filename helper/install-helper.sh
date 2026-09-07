@@ -17,6 +17,7 @@ POLICY=/usr/share/polkit-1/actions/org.claudeguard.helper.policy
 
 if [ "${1:-}" = "--uninstall" ]; then
     rm -f "$HELPER" "$POLICY"
+    rm -rf /usr/libexec/claude-guard
     echo "Helper and policy removed."
     exit 0
 fi
@@ -24,6 +25,9 @@ fi
 install -d -m 755 -o root -g root /usr/libexec
 install -m 755 -o root -g root "$SRC_DIR/claude-guard-helper" "$HELPER"
 install -m 644 -o root -g root "$SRC_DIR/org.claudeguard.helper.policy" "$POLICY"
+# The collect action imports this. Root-owned so no user can change what runs as root.
+install -d -m 755 -o root -g root /usr/libexec/claude-guard
+install -m 644 -o root -g root "$SRC_DIR/../collectors.py" /usr/libexec/claude-guard/collectors.py
 
 # Verify, don't assume.
 perms=$(stat -c '%U:%G:%a' "$HELPER")

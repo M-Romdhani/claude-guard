@@ -26,6 +26,11 @@ import syslog
 
 TRUSTED_DIRS = ("/usr/sbin", "/usr/bin", "/sbin", "/bin")
 
+# Root-owned copy of the collector table, installed beside this helper.
+# A fixed absolute path on purpose: accepting a path from the caller would
+# let any user choose what code runs as root.
+HELPER_LIB = "/usr/libexec/claude-guard"
+
 # Units this helper will stop or mask. Network-facing or clearly leftover
 # services only -- never anything the desktop or boot depends on. Adding a unit
 # here is a security decision; do not widen it to "any unit the model names".
@@ -40,6 +45,10 @@ UNIT_ALLOWLIST = {
 }
 
 ACTIONS = {
+    "collect": {
+        "summary": "Run the read-only collectors with full visibility",
+        "builtin": True,
+    },
     "ufw-enable": {
         "argv": ["ufw", "--force", "enable"],
         "summary": "Turn the firewall on (deny incoming, allow outgoing)",
@@ -87,10 +96,35 @@ def resolve(binary: str) -> str:
     fail(3, f"{binary} not found in a trusted directory")
 
 
+def collect() -> int:
+    """Run the read-only collectors as root and print them as JSON.
+
+    Only collection happens here. The API call and the parsing of whatever comes
+    back are done by the unprivileged caller -- root reads the machine, but never
+    parses anything that arrived over the network. That separation is the reason
+    this action exists at all rather than simply running the whole scan as root.
+    """
+    lib = os.path.join(HELPER_LIB, "collectors.py")
+    try:
+        st = os.stat(lib)
+    except OSError:
+        fail(3, f"{lib} is missing -- reinstall the helper")
+    if st.st_uid != 0 or st.st_mode & 0o022:
+        fail(3, f"{lib} must be root-owned and not group- or world-writable")
+
+    sys.path.insert(0, HELPER_LIB)
+    import collectors  # noqa: E402  -- imported only after the ownership check
+
+    print(json.dumps([o.as_dict() for o in collectors.collect_all()]))
+    return 0
+
+
 def build_argv(action_id: str, param: str | None) -> list[str]:
     spec = ACTIONS.get(action_id)
     if spec is None:
         fail(2, f"unknown action {action_id!r}")
+    if spec.get("builtin"):
+        fail(2, f"action {action_id!r} is handled before this point")
 
     if "param" not in spec:
         if param is not None:
@@ -120,6 +154,12 @@ def main() -> int:
         print(json.dumps({"actions": {k: v["summary"] for k, v in ACTIONS.items()},
                           "units": sorted(UNIT_ALLOWLIST)}, indent=2))
         return 0
+
+    if ACTIONS.get(action_id, {}).get("builtin"):
+        if param is not None:
+            fail(3, f"action {action_id!r} takes no parameter")
+        syslog.syslog(syslog.LOG_NOTICE, f"uid={os.environ.get('PKEXEC_UID','?')} action=collect")
+        return collect()
 
     argv = build_argv(action_id, param)
     caller = os.environ.get("PKEXEC_UID", "unknown")
