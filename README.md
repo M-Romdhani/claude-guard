@@ -38,6 +38,29 @@ Three layers, deliberately separated:
 Detection stays deterministic; the model only ever does interpretation. That is
 what makes the output reproducible enough to trust.
 
+## Desktop app
+
+```bash
+python3 app.py
+```
+
+Use the **system** `python3`, not the one in `.venv` -- GTK/PyGObject is a system
+package. The app launches the venv's interpreter internally for the scan itself;
+that split is deliberate.
+
+GTK4 + libadwaita. Runs as your normal user and never as root. Findings are
+grouped into "need action" and "for information" rather than shown as five
+severities, and the clean state is a real screen rather than an empty list.
+
+Applying a fix maps the model's command through `actions.py` and calls the
+polkit helper, so the password prompt is your desktop's own. A command that does
+**not** map to a known helper action offers *Copy command* instead of *Apply*,
+and says plainly that Claude Guard will not run it -- the fail-closed path is a
+normal explained state, not an error.
+
+Not yet built, from the design: history/drift, the first-run key screen, timer
+settings, and in-place confirmation instead of a dialog.
+
 ## Scheduled scanning (systemd timer)
 
 Turns Guard from something you remember to run into something that watches.
