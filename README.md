@@ -83,6 +83,16 @@ reworded. A finding recorded as applied that shows up again is badged **came
 back** -- either the fix did not hold or something switched it back on, and both
 are worth knowing. Delete that file to start over.
 
+On first run the app shows a consent panel rather than an empty screen: what the
+two scan modes differ on, the exact commands that will be read (expandable), and
+what cannot happen. That is the only moment where saying what leaves the machine
+means anything -- afterwards it already has.
+
+The state of background scanning is shown permanently in the footer, including
+the case that matters most: **on but never run yet**. A timer that looks
+installed and is protecting nobody is the failure this project exists to avoid,
+so it is never left to silence.
+
 Not yet built, from the design: history/drift, the first-run key screen, timer
 settings, and in-place confirmation instead of a dialog.
 

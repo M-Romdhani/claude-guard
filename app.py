@@ -57,6 +57,34 @@ OVERALL = {"good": ("Nothing needs your attention", "#33d17a"),
            "at_risk": ("At risk", "#c01c28")}
 
 
+def timer_status() -> dict:
+    """Whether background scanning is set up, and whether it has ever run.
+
+    "Enabled but never run" is its own state and deserves saying out loud: the
+    timer looks installed and is protecting nobody yet. A guard that quietly is
+    not one is the failure this whole project exists to avoid.
+    """
+    def show(unit: str, prop: str) -> str:
+        return subprocess.run(["systemctl", "show", unit, "-p", prop, "--value"],
+                              capture_output=True, text=True).stdout.strip()
+
+    enabled = subprocess.run(["systemctl", "is-enabled", "claude-guard.timer"],
+                             capture_output=True, text=True).stdout.strip()
+    if enabled not in ("enabled", "enabled-runtime"):
+        return {"installed": False,
+                "text": "Daily scanning is not set up — run  sudo ./install-timer.sh"}
+
+    ever = bool(show("claude-guard.service", "ExecMainStartTimestamp"))
+    nxt = show("claude-guard.timer", "NextElapseUSecRealtime") or "unknown"
+    nxt = " ".join(nxt.split()[:3]) if nxt != "unknown" else nxt
+    if not ever:
+        return {"installed": True, "ever": False,
+                "text": f"Daily scan is on but has never run yet · first run {nxt}"}
+    last = " ".join(show("claude-guard.service", "ExecMainStartTimestamp").split()[:3])
+    return {"installed": True, "ever": True,
+            "text": f"Daily scan is on · last ran {last} · next {nxt}"}
+
+
 def dot(severity: str) -> Gtk.Widget:
     d = Gtk.DrawingArea(content_width=10, content_height=10, valign=Gtk.Align.CENTER)
     colour = ACCENT.get(severity, "#9a9996")
@@ -107,11 +135,27 @@ class GuardWindow(Adw.ApplicationWindow):
             title="Scans send your system state to the Anthropic API",
             revealed=False)
 
+        # Permanent, not just on the empty screen: "is the timer actually
+        # working" is worth knowing every day, and nothing else surfaces it.
+        self.timer_label = Gtk.Label(xalign=0, wrap=True, margin_top=8, margin_bottom=8,
+                                     margin_start=14, margin_end=14)
+        self.timer_label.add_css_class("caption")
+        self.timer_label.add_css_class("dim-label")
+        self.refresh_timer_label()
+
         toolbar = Adw.ToolbarView()
         toolbar.add_top_bar(header)
         toolbar.add_top_bar(self.banner)
+        toolbar.add_bottom_bar(self.timer_label)
         toolbar.set_content(scroller)
         return Adw.NavigationPage(title="Claude Guard", child=toolbar)
+
+    def refresh_timer_label(self) -> None:
+        status = timer_status()
+        self.timer_label.set_text(status["text"])
+        self.timer_label.remove_css_class("warning")
+        if not status["installed"] or not status.get("ever"):
+            self.timer_label.add_css_class("warning")
 
     def _detail_page(self, finding: dict) -> Adw.NavigationPage:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20,
@@ -190,6 +234,81 @@ class GuardWindow(Adw.ApplicationWindow):
         toolbar.add_top_bar(header)
         toolbar.set_content(Gtk.ScrolledWindow(vexpand=True, child=box))
         return Adw.NavigationPage(title="Finding", child=toolbar)
+
+    def _first_run_panel(self) -> Gtk.Widget:
+        """Consent, not a menu.
+
+        This is the one moment where telling someone what leaves their machine
+        actually means anything -- afterwards it has already gone. So the first
+        screen explains what will be read and what cannot happen, and the button
+        that starts a scan is the thing they press having read it.
+        """
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20,
+                      margin_top=12, margin_bottom=12)
+
+        head = Gtk.Label(label="Before the first scan", xalign=0)
+        head.add_css_class("title-2")
+        box.append(head)
+        intro = Gtk.Label(
+            label="Claude Guard runs read-only commands, sends the output to Claude "
+                  "to be interpreted, and explains what actually matters. It changes "
+                  "nothing on its own.",
+            xalign=0, wrap=True)
+        box.append(intro)
+
+        modes = Adw.PreferencesGroup(title="Two ways to scan")
+        modes.add(Adw.ActionRow(
+            title="Scan now",
+            subtitle="Reads what your user account can see. No password needed.",
+            subtitle_lines=0))
+        modes.add(Adw.ActionRow(
+            title="Full scan…",
+            subtitle="Asks for your password, then also reads firewall rules and "
+                     "service state. Without it, findings about your firewall cannot "
+                     "be confirmed.",
+            subtitle_lines=0))
+        box.append(modes)
+
+        reads = Adw.PreferencesGroup(title=f"What gets read ({len(COLLECTOR_CMD)} read-only commands)")
+        expander = Adw.ExpanderRow(title="Show the exact commands")
+        for name, cmd in COLLECTOR_CMD.items():
+            row = Adw.ActionRow(title=cmd, subtitle=name)
+            row.add_css_class("monospace")
+            expander.add_row(row)
+        reads.add(expander)
+        box.append(reads)
+
+        trust = Adw.PreferencesGroup(title="Nothing changes without you")
+        for line in (
+            "The model is given no tools. It returns a report; it cannot run anything.",
+            "Every fix is applied only after you confirm it, one at a time.",
+            "Your password is never handled by Claude Guard — your desktop asks for it.",
+        ):
+            row = Adw.ActionRow(title=line, title_lines=0)
+            row.add_prefix(Gtk.Image(icon_name="object-select-symbolic"))
+            trust.add(row)
+        box.append(trust)
+
+        privacy = Gtk.Label(
+            label="Your system state is sent to the Anthropic API to be interpreted. "
+                  "A scan costs a fraction of a cent.",
+            xalign=0, wrap=True)
+        privacy.add_css_class("caption")
+        privacy.add_css_class("dim-label")
+        box.append(privacy)
+
+        buttons = Gtk.Box(spacing=10, halign=Gtk.Align.START)
+        primary = Gtk.Button(label="Run the first scan")
+        primary.add_css_class("suggested-action")
+        primary.add_css_class("pill")
+        primary.connect("clicked", lambda _b: self.run_scan())
+        buttons.append(primary)
+        full = Gtk.Button(label="Full scan…")
+        full.add_css_class("pill")
+        full.connect("clicked", lambda _b: self.run_scan(privileged=True))
+        buttons.append(full)
+        box.append(buttons)
+        return box
 
     # ---------- progress ----------
 
@@ -413,10 +532,7 @@ class GuardWindow(Adw.ApplicationWindow):
             self.subtitle.set_subtitle("Last scan by the daily timer")
             self.render()
         except (OSError, ValueError):
-            self.body.append(Adw.StatusPage(
-                icon_name="security-medium-symbolic",
-                title="No scan yet",
-                description="Press Scan now to check this machine.", vexpand=True))
+            self.body.append(self._first_run_panel())
 
     def run_scan(self, privileged: bool = False) -> None:
         self.scan_btn.set_sensitive(False)
@@ -482,6 +598,7 @@ class GuardWindow(Adw.ApplicationWindow):
             return False
         self.report = json.loads(proc.stdout)
         self.subtitle.set_subtitle("Scanned just now")
+        self.refresh_timer_label()
         self.render()
         return False
 
