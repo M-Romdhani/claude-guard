@@ -16,10 +16,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import actions
+
+# How long after applying a fix its reappearance still counts as "applied"
+# rather than "came back".
+RECENT = timedelta(hours=6)
 
 APPLIED = "applied"
 IGNORED = "ignored"
@@ -78,13 +82,23 @@ def annotate(findings: list[dict]) -> dict[str, tuple[str, str]]:
     more useful than silently listing it as new.
     """
     data = load()
+    now = datetime.now(timezone.utc)
     out = {}
     for f in findings:
         entry = data.get(key_for(f))
         if not entry:
             continue
-        if entry["status"] == APPLIED:
-            out[key_for(f)] = ("came back", entry.get("when", ""))
-        elif entry["status"] == IGNORED:
-            out[key_for(f)] = ("ignored", entry.get("when", ""))
+        when = entry.get("when", "")
+        if entry["status"] == IGNORED:
+            out[key_for(f)] = ("ignored", when)
+            continue
+        # A fix applied minutes ago that is still reported has usually not
+        # failed -- apt holds packages back, a service needs a reboot. Calling
+        # that "came back" reads as an accusation and is often wrong. Only a
+        # finding that returns much later has actually returned.
+        try:
+            age = now - datetime.fromisoformat(when)
+        except ValueError:
+            age = timedelta.max
+        out[key_for(f)] = (("applied" if age < RECENT else "came back"), when)
     return out

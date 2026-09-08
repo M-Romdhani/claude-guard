@@ -322,6 +322,7 @@ class GuardWindow(Adw.ApplicationWindow):
         group = Adw.PreferencesGroup()
         for name, cmd in COLLECTOR_CMD.items():
             row = Adw.ActionRow(title=cmd, subtitle=f"{name} · read-only")
+            row.set_use_markup(False)
             row.add_css_class("monospace")
             group.add(row)
         box.append(group)
@@ -374,6 +375,7 @@ class GuardWindow(Adw.ApplicationWindow):
                 shown += f"\n… {len(lines) - 12} more lines"
             raw = Adw.ActionRow(title=f"$ {obs['command']}", subtitle=shown,
                                 subtitle_lines=0)
+            raw.set_use_markup(False)   # collector output is text, not markup
             raw.add_css_class("monospace")
             ev_group.add(raw)
         reading = Adw.ActionRow(title=finding["evidence"], title_lines=0,
@@ -393,6 +395,9 @@ class GuardWindow(Adw.ApplicationWindow):
         if cmd:
             fix_group = Adw.PreferencesGroup(title="Proposed fix")
             cmd_row = Adw.ActionRow(title=cmd, title_lines=0)
+            # A shell command is not markup: `apt update && apt upgrade` contains
+            # an unescaped &, which Pango rejects, and the row renders blank.
+            cmd_row.set_use_markup(False)
             cmd_row.add_css_class("monospace")
             fix_group.add(cmd_row)
             box.append(fix_group)
@@ -409,6 +414,7 @@ class GuardWindow(Adw.ApplicationWindow):
                     row = Adw.ActionRow(
                         title=step.summary,
                         subtitle=step.action_id + (f" · {argv}" if argv else ""))
+                    row.set_use_markup(False)
                     row.add_css_class("monospace")
                     marker = Gtk.Label(label=str(n), valign=Gtk.Align.CENTER)
                     marker.add_css_class("cg-pill")
@@ -762,7 +768,8 @@ class GuardWindow(Adw.ApplicationWindow):
         if badge:
             tag = Gtk.Label(label=badge[0], valign=Gtk.Align.CENTER)
             tag.add_css_class("cg-tag")
-            tag.add_css_class("warning" if badge[0] == "came back" else "dim-label")
+            tag.add_css_class("warning" if badge[0] == "came back"
+                              else "success" if badge[0] == "applied" else "dim-label")
             row.add_suffix(tag)
         row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
         row.connect("activated", lambda _r, fi=f: self.nav.push(self._detail_page(fi)))
