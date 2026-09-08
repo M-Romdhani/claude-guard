@@ -89,6 +89,16 @@ would actually do (`2 privileged actions · systemctl disable --now smbd nmbd`)
 before you open it — read straight off the same mapper that decides whether
 Apply is offered at all.
 
+A finding's evidence is the collector's **real output, verbatim**, shown next to
+Claude's reading of it. The model names which collector shows the problem; the
+app looks up that output itself. Showing only the model's description under a
+heading like "Evidence" would put a trust claim on text the model wrote about
+its own reasoning — which is the one place this tool cannot afford to be loose.
+
+The proposed fix lists the helper actions it maps to and **the argv that would
+actually run**, read from `claude-guard-helper --list` rather than from a second
+copy of the table, so the disclosure cannot drift from the behaviour.
+
 On first run the app shows a consent panel rather than an empty screen: what the
 two scan modes differ on, the exact commands that will be read (expandable), and
 what cannot happen. That is the only moment where saying what leaves the machine

@@ -214,7 +214,11 @@ def main() -> int:
         return 1
 
     if args.json:
-        print(json.dumps(report.model_dump(), indent=2))
+        # The observations ride along so a UI can show a finding's evidence as
+        # the collector's real output rather than a description of it.
+        payload = report.model_dump()
+        payload["observations"] = [o.as_dict() for o in observations]
+        print(json.dumps(payload, indent=2))
         return 0
 
     print_report(report)

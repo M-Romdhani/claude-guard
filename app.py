@@ -43,6 +43,26 @@ CACHED_REPORT = Path("/var/lib/claude-guard/latest.json")
 HELPER = "/usr/libexec/claude-guard-helper"
 
 # Shown live while collecting, so "read-only" is inspectable rather than asserted.
+def helper_actions() -> dict:
+    """What the helper says it would run, read from the helper itself.
+
+    Deliberately not a copy of its table: a second copy would drift, and what is
+    shown to the user must be what actually runs.
+    """
+    try:
+        out = subprocess.run([HELPER, "--list"], capture_output=True, text=True, timeout=5)
+        return json.loads(out.stdout).get("actions", {})
+    except Exception:
+        return {}
+
+
+def resolved_argv(step) -> str:
+    spec = helper_actions().get(step.action_id)
+    if not spec or not spec.get("argv"):
+        return ""
+    return " ".join(a.format(unit=step.param) if step.param else a for a in spec["argv"])
+
+
 try:
     from collectors import COLLECTORS
     COLLECTOR_CMD = {k: " ".join(v[1]) for k, v in COLLECTORS.items()}
@@ -255,9 +275,23 @@ class GuardWindow(Adw.ApplicationWindow):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20,
                       margin_top=22, margin_bottom=22, margin_start=22, margin_end=22)
 
-        sev = Gtk.Label(label=finding["severity"].upper(), xalign=0)
-        sev.add_css_class("caption-heading")
-        box.append(sev)
+        header_row = Gtk.Box(spacing=10)
+        sev = Gtk.Label(label=finding["severity"], valign=Gtk.Align.CENTER)
+        sev.add_css_class("cg-pill")
+        sev.add_css_class(f"cg-{finding['severity']}")
+        header_row.append(sev)
+        mark = decisions.annotate([finding]).get(decisions.key_for(finding))
+        if mark:
+            tag = Gtk.Label(label=mark[0], valign=Gtk.Align.CENTER)
+            tag.add_css_class("cg-tag")
+            tag.add_css_class("warning" if mark[0] == "came back" else "dim-label")
+            header_row.append(tag)
+            said = (f"You applied this fix on {mark[1][:10]} and it is back"
+                    if mark[0] == "came back" else f"You ignored this on {mark[1][:10]}")
+            header_row.append(Gtk.Label(label=said, xalign=0, wrap=True,
+                                        valign=Gtk.Align.CENTER,
+                                        css_classes=["caption", "dim-label"]))
+        box.append(header_row)
 
         title = Gtk.Label(label=finding["title"], xalign=0, wrap=True)
         title.add_css_class("title-2")
@@ -266,11 +300,28 @@ class GuardWindow(Adw.ApplicationWindow):
         meaning = Gtk.Label(label=finding["what_it_means"], xalign=0, wrap=True)
         box.append(meaning)
 
+        # The collector's real output, verbatim, alongside the model's reading of
+        # it. Showing only the reading under a heading like "Evidence" puts a
+        # trust claim on text the model wrote about its own reasoning.
+        observations = {o["name"]: o for o in (self.report or {}).get("observations", [])}
+        obs = observations.get(finding.get("evidence_collector", ""))
+
         ev_group = Adw.PreferencesGroup(title="Evidence")
-        ev_row = Adw.ActionRow(title=finding["evidence"], title_lines=0)
-        ev_row.add_css_class("monospace")
-        ev_group.add(ev_row)
+        if obs:
+            ev_group.set_description(f"{obs['name']} · collector output, unmodified")
+            lines = obs["output"].splitlines()
+            shown = "\n".join(lines[:12])
+            if len(lines) > 12:
+                shown += f"\n… {len(lines) - 12} more lines"
+            raw = Adw.ActionRow(title=f"$ {obs['command']}", subtitle=shown,
+                                subtitle_lines=0)
+            raw.add_css_class("monospace")
+            ev_group.add(raw)
+        reading = Adw.ActionRow(title=finding["evidence"], title_lines=0,
+                                subtitle="Claude's reading of that output")
+        ev_group.add(reading)
         box.append(ev_group)
+
         note = Gtk.Label(
             label="Collected by fixed, read-only commands. Claude read this output "
                   "and ranked it; it did not run anything.",
@@ -291,6 +342,25 @@ class GuardWindow(Adw.ApplicationWindow):
                                  xalign=0, wrap=True))
 
             plan = actions.plan(cmd)
+            if plan:
+                steps = Adw.PreferencesGroup(
+                    description="What this maps to in the polkit helper")
+                for n, step in enumerate(plan, start=1):
+                    argv = resolved_argv(step)
+                    row = Adw.ActionRow(
+                        title=step.summary,
+                        subtitle=step.action_id + (f" · {argv}" if argv else ""))
+                    row.add_css_class("monospace")
+                    marker = Gtk.Label(label=str(n), valign=Gtk.Align.CENTER)
+                    marker.add_css_class("cg-pill")
+                    marker.add_css_class("cg-info")
+                    row.add_prefix(marker)
+                    row.add_suffix(Gtk.Label(label="helper action",
+                                             css_classes=["caption", "dim-label"],
+                                             valign=Gtk.Align.CENTER))
+                    steps.add(row)
+                box.append(steps)
+
             buttons = Gtk.Box(spacing=10)
             if plan:
                 apply_btn = Gtk.Button(label="Apply this fix…")
@@ -567,7 +637,7 @@ class GuardWindow(Adw.ApplicationWindow):
             card.append(body)
         return card
 
-    def _finding_row(self, f: dict, badge: str | None) -> Adw.ActionRow:
+    def _finding_row(self, f: dict, badge: tuple | None) -> Adw.ActionRow:
         subtitle = GLib.markup_escape_text(f.get("what_it_means", ""))
         # What the fix actually does, without having to open it. Comes straight
         # from the same mapper that decides whether Apply is offered at all.
@@ -582,9 +652,9 @@ class GuardWindow(Adw.ApplicationWindow):
                             activatable=True, subtitle_lines=3)
         row.add_prefix(self._pill(f["severity"]))
         if badge:
-            tag = Gtk.Label(label=badge, valign=Gtk.Align.CENTER)
+            tag = Gtk.Label(label=badge[0], valign=Gtk.Align.CENTER)
             tag.add_css_class("cg-tag")
-            tag.add_css_class("warning" if badge == "came back" else "dim-label")
+            tag.add_css_class("warning" if badge[0] == "came back" else "dim-label")
             row.add_suffix(tag)
         row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
         row.connect("activated", lambda _r, fi=f: self.nav.push(self._detail_page(fi)))

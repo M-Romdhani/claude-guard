@@ -48,6 +48,9 @@ How to judge what you see:
   hardening. Do not inflate severity to seem thorough.
 - Say clearly when something is fine. A short report with two findings is better
   than a padded one with ten.
+- evidence_collector must be one of the collector names given to you, copied
+  exactly. The reader is shown that collector's real output next to your reading
+  of it, so naming the wrong one is worse than leaving it empty.
 - headline is one sentence. Each entry in points stands alone and is read on its
   own line, so do not write a paragraph and chop it up: no "also", no "however",
   no sentence that only makes sense after the one before it.
@@ -61,7 +64,11 @@ class Finding(BaseModel):
     severity: Literal["critical", "high", "medium", "low", "info"]
     title: str = Field(description="Short headline, under 70 characters")
     what_it_means: str = Field(description="Plain-language explanation for a non-expert")
-    evidence: str = Field(description="Which collector and which line led to this")
+    evidence_collector: str = Field(
+        description="The name of the single collector whose output most directly shows "
+                    "this, copied exactly as it appears in the data (e.g. listening_ports). "
+                    "Empty string if no single collector shows it.")
+    evidence: str = Field(description="Your reading of what in that output shows it")
     fix_command: str = Field(description="One shell command, or empty string if no action needed")
     fix_explanation: str = Field(description="What the command does, or why no action is needed")
 

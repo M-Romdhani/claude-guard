@@ -157,8 +157,14 @@ def main() -> int:
     param = sys.argv[2] if len(sys.argv) == 3 else None
 
     if action_id == "--list":
-        print(json.dumps({"actions": {k: v["summary"] for k, v in ACTIONS.items()},
-                          "units": sorted(UNIT_ALLOWLIST)}, indent=2))
+        # argv is published so a UI can show what would really run, instead of
+        # keeping its own copy of this table and letting the two drift apart.
+        print(json.dumps({
+            "actions": {k: {"summary": v["summary"],
+                            "argv": v.get("argv", []),
+                            "param": v.get("param")}
+                        for k, v in ACTIONS.items()},
+            "units": sorted(UNIT_ALLOWLIST)}, indent=2))
         return 0
 
     if ACTIONS.get(action_id, {}).get("builtin"):

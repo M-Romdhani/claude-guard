@@ -70,7 +70,7 @@ def status_of(finding: dict, data: dict | None = None) -> str | None:
     return entry["status"] if entry else None
 
 
-def annotate(findings: list[dict]) -> dict[str, str]:
+def annotate(findings: list[dict]) -> dict[str, tuple[str, str]]:
     """Map finding key -> badge text for a whole report, in one read.
 
     A finding recorded as applied that is present again is the interesting case:
@@ -80,9 +80,11 @@ def annotate(findings: list[dict]) -> dict[str, str]:
     data = load()
     out = {}
     for f in findings:
-        status = status_of(f, data)
-        if status == APPLIED:
-            out[key_for(f)] = "came back"
-        elif status == IGNORED:
-            out[key_for(f)] = "ignored"
+        entry = data.get(key_for(f))
+        if not entry:
+            continue
+        if entry["status"] == APPLIED:
+            out[key_for(f)] = ("came back", entry.get("when", ""))
+        elif entry["status"] == IGNORED:
+            out[key_for(f)] = ("ignored", entry.get("when", ""))
     return out
