@@ -126,6 +126,11 @@ def pill_css(dark: bool) -> str:
         rules.append(f".cg-pill.cg-{sev}{{color:{fg};background:{bg};}}")
     rules.append(".cg-tag{font-size:.8em;font-weight:700;padding:1px 7px;"
                  "border-radius:6px;border:1px solid alpha(currentColor,.4);}")
+    # AdwStatusPage draws its icon at 128px, which overflows and gets clipped in
+    # a short window. Fixed and smaller so the whole shield always shows.
+    rules.append("statuspage > scrolledwindow > viewport > box > .icon"
+                 "{-gtk-icon-size:72px;min-width:72px;min-height:72px;"
+                 "margin-top:0;margin-bottom:6px;}")
     return "".join(rules)
 ACCENT = {"critical": "#c01c28", "high": "#ff7b63", "medium": "#f5c211",
           "low": "#78aeed", "info": "#9a9996"}

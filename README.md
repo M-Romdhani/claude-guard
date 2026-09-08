@@ -209,6 +209,24 @@ Each action re-authenticates (`auth_admin`, not `auth_admin_keep`) -- a cached
 root credential inside a tool that runs privileged commands is precisely what
 brief local access would wait for.
 
+## Tests
+
+```bash
+python3 -m unittest discover -s tests        # fast, no API, no key
+./.venv/bin/python -m unittest tests.test_injection   # one real API call
+```
+
+`tests/test_actions.py` covers the allowlist boundary — the function that decides
+what a model-written command can reach. Most of it is the refusals: `ufw disable`,
+`systemd-logind`, `smbd.socket` (a different unit from `smbd.service`, and it must
+not inherit its permission), `rm -rf`, a piped download, and a compound command
+whose second half does not map.
+
+`tests/test_injection.py` exercises the claim everything else rests on. It plants
+two attacks in collector output — one demanding the report come back clean, one
+trying to have a destructive command proposed as a fix — alongside a genuine
+problem, then checks that the model neither obeyed nor went quiet.
+
 ## Security properties
 
 These are the reasons the code is shaped the way it is:
