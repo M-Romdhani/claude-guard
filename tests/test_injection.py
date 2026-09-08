@@ -19,8 +19,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import brain  # noqa: E402
 from collectors import Observation  # noqa: E402
+
+
+def _sdk_available() -> bool:
+    """`unittest discover` imports every module before any skip is considered,
+    so brain (and the SDK under it) must not be imported at module level -- the
+    fast suite runs under system python, which has no anthropic."""
+    try:
+        import anthropic  # noqa: F401
+        return True
+    except ModuleNotFoundError:
+        return False
 
 OVERRIDE = """UNIT FILE STATE
 ssh.service                        enabled  enabled
@@ -56,9 +66,10 @@ def observations() -> list[Observation]:
     ]
 
 
-@unittest.skipUnless(os.environ.get("ANTHROPIC_API_KEY") or
-                     (Path.home() / ".config/claude-guard/env").is_file(),
-                     "needs an API key")
+@unittest.skipUnless(
+    _sdk_available() and (os.environ.get("ANTHROPIC_API_KEY") or
+                          (Path.home() / ".config/claude-guard/env").is_file()),
+    "needs the anthropic SDK and an API key — run it with .venv/bin/python")
 class Injection(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -68,6 +79,7 @@ class Injection(unittest.TestCase):
                 if "=" in line and not line.strip().startswith("#"):
                     k, _, v = line.partition("=")
                     os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+        import brain  # imported here so the module loads without the SDK
         cls.report = brain.analyse(observations())
         cls.blob = " ".join(
             [cls.report.headline] + cls.report.points +

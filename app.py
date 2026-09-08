@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import re
 import tempfile
 import threading
 from datetime import datetime
@@ -40,6 +41,7 @@ import decisions  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 PYTHON = HERE / ".venv" / "bin" / "python"
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
 STATE_DIR = Path("/var/lib/claude-guard")
 CACHED_REPORT = STATE_DIR / "latest.json"
 HELPER = "/usr/libexec/claude-guard-helper"
@@ -922,8 +924,11 @@ class GuardWindow(Adw.ApplicationWindow):
                 if observations:
                     proc.stdin.write(observations)
                     proc.stdin.close()
+                notes = []
                 for line in proc.stderr:
-                    line = line.strip()
+                    line = ANSI.sub("", line).strip()
+                    if line and not line.startswith("@@"):
+                        notes.append(line)
                     if line.startswith("@@PROGRESS"):
                         counter, name = line.split(None, 2)[1:]
                         done, total = (int(x) for x in counter.split("/"))
@@ -943,7 +948,8 @@ class GuardWindow(Adw.ApplicationWindow):
                 stdout = out.read()
 
             GLib.idle_add(self.scan_done,
-                          subprocess.CompletedProcess(argv, proc.returncode, stdout, ""))
+                          subprocess.CompletedProcess(argv, proc.returncode, stdout,
+                                                      "\n".join(notes)))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -952,6 +958,20 @@ class GuardWindow(Adw.ApplicationWindow):
         self.full_btn.set_sensitive(True)
         if proc.returncode != 0:
             self.subtitle.set_subtitle("Scan failed")
+            reason = (proc.stderr or "").strip()
+            reason = reason.split("Scan failed:", 1)[-1].strip() or \
+                "The scan did not finish, and gave no reason."
+            while (child := self.body.get_first_child()) is not None:
+                self.body.remove(child)
+            page = Adw.StatusPage(icon_name="dialog-error-symbolic",
+                                  title="Scan failed", description=reason)
+            page.set_vexpand(False)
+            self.body.append(page)
+            retry = Gtk.Button(label="Try again", halign=Gtk.Align.CENTER)
+            retry.add_css_class("suggested-action")
+            retry.add_css_class("pill")
+            retry.connect("clicked", lambda _b: self.run_scan())
+            self.body.append(retry)
             return False
         self.report = json.loads(proc.stdout)
         self.subtitle.set_subtitle("Scanned just now")

@@ -82,6 +82,35 @@ class Report(BaseModel):
     findings: list[Finding]
 
 
+def explain_failure(exc: Exception) -> str:
+    """Turn an API failure into something the reader can act on.
+
+    "Scan failed" teaches people to stop opening the tool. Naming the cause and
+    the next step is most of the difference between one that gets trusted and
+    one that gets ignored. Most specific first: AuthenticationError and
+    RateLimitError are both APIStatusError, and APITimeoutError is an
+    APIConnectionError.
+    """
+    if isinstance(exc, anthropic.AuthenticationError):
+        return ("The API key was rejected. Check the key in "
+                "~/.config/claude-guard/env (or /etc/claude-guard/env for the "
+                "timer) — it may be mistyped or revoked. Nothing was scanned.")
+    if isinstance(exc, anthropic.PermissionDeniedError):
+        return ("That key is not allowed to use this model. Check the workspace "
+                "it belongs to, or try a different model.")
+    if isinstance(exc, anthropic.RateLimitError):
+        return "Rate limited by the API. Wait a minute and scan again."
+    if isinstance(exc, anthropic.APIStatusError):
+        return (f"The API returned HTTP {exc.status_code}. Nothing on this "
+                "machine was changed.")
+    if isinstance(exc, anthropic.APITimeoutError):
+        return "The API did not answer in time. Your system state was read but not judged."
+    if isinstance(exc, anthropic.APIConnectionError):
+        return ("Could not reach the Anthropic API — check your network. Your "
+                "system state was collected but never left this machine.")
+    return str(exc)
+
+
 _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
 

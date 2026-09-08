@@ -212,9 +212,13 @@ brief local access would wait for.
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # fast, no API, no key
-./.venv/bin/python -m unittest tests.test_injection   # one real API call
+python3 -m unittest discover -s tests                  # fast, no API, no key
+./.venv/bin/python -m unittest tests.test_injection    # one real API call
 ```
+
+The fast suite runs under system python and skips the injection test, which
+needs the SDK and a key. `discover` imports every module before deciding what to
+skip, so that test imports nothing from the SDK at module level.
 
 `tests/test_actions.py` covers the allowlist boundary — the function that decides
 what a model-written command can reach. Most of it is the refusals: `ufw disable`,

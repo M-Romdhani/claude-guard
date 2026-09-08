@@ -210,7 +210,7 @@ def main() -> int:
     try:
         report = brain.analyse(observations, model=args.model)
     except Exception as exc:  # surfaced plainly -- this is a CLI, not a library
-        print(f"Analysis failed: {exc}", file=sys.stderr)
+        print(f"Scan failed: {brain.explain_failure(exc)}", file=sys.stderr)
         return 1
 
     if args.json:
