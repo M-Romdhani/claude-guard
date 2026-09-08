@@ -10,10 +10,16 @@ PYTHON="$SCRIPT_DIR/.venv/bin/python"
 STATE_DIR="/var/lib/claude-guard"
 REPORT="$STATE_DIR/latest.json"
 
+# Reports describe open ports, sudo membership, LAN neighbours and logins --
+# recon material for anyone else with a local account. Readable by root and the
+# owning group only; install-timer.sh sets that group to the installing user so
+# the app can still read its own history without a password prompt.
 mkdir -p "$STATE_DIR"
+chmod 0750 "$STATE_DIR"
+umask 0027
 
-if ! "$PYTHON" "$SCRIPT_DIR/guard.py" --json > "$STATE_DIR/.tmp.json" 2>"$STATE_DIR/last-error.log"; then
-    echo "scan failed -- see $STATE_DIR/last-error.log" >&2
+if ! "$PYTHON" "$SCRIPT_DIR/guard.py" --json > "$STATE_DIR/.tmp.json" 2>"$STATE_DIR/last-run.log"; then
+    echo "scan failed -- see $STATE_DIR/last-run.log" >&2
     exit 1
 fi
 mv "$STATE_DIR/.tmp.json" "$REPORT"

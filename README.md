@@ -143,6 +143,12 @@ sudo cat /var/lib/claude-guard/latest.json         # the report
 sudo ./install-timer.sh --uninstall   # stop and remove the timer
 ```
 
+Reports describe open ports, sudo membership, LAN neighbours and login history —
+recon material for anyone else with a local account. `/var/lib/claude-guard` is
+therefore `0750`, owned by root and the installing user's group, so the app can
+read its own history without a password prompt and nobody else can read it at
+all. If you installed before this, `sudo ./install-timer.sh` again to tighten it.
+
 **The timer never applies a fix.** It reports and notifies; you decide.
 
 ## Privileged helper (for the desktop app)

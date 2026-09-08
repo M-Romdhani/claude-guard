@@ -49,6 +49,10 @@ ACTIONS = {
         "summary": "Run the read-only collectors with full visibility",
         "builtin": True,
     },
+    "timer-run-now": {
+        "argv": ["systemctl", "start", "claude-guard.service"],
+        "summary": "Run the scheduled scan once, now",
+    },
     "ufw-enable": {
         "argv": ["ufw", "--force", "enable"],
         "summary": "Turn the firewall on (deny incoming, allow outgoing)",

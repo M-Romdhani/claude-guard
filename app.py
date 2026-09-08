@@ -14,6 +14,7 @@ import json
 import subprocess
 import tempfile
 import threading
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -39,10 +40,37 @@ import decisions  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 PYTHON = HERE / ".venv" / "bin" / "python"
-CACHED_REPORT = Path("/var/lib/claude-guard/latest.json")
+STATE_DIR = Path("/var/lib/claude-guard")
+CACHED_REPORT = STATE_DIR / "latest.json"
 HELPER = "/usr/libexec/claude-guard-helper"
 
 # Shown live while collecting, so "read-only" is inspectable rather than asserted.
+def read_history(limit: int = 30) -> list[dict]:
+    """Past reports, newest first.
+
+    Read directly rather than through the helper: install-timer.sh gives the
+    state directory to the installing user's group, so this needs no privilege
+    and therefore no password prompt just to look at your own history.
+    """
+    out = []
+    try:
+        files = sorted(STATE_DIR.glob("report-*.json"), reverse=True)[:limit]
+    except OSError:
+        return out
+    for f in files:
+        try:
+            report = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        stamp = f.stem.removeprefix("report-")
+        try:
+            when = datetime.strptime(stamp, "%Y%m%d-%H%M%S").strftime("%a %d %b, %H:%M")
+        except ValueError:
+            when = stamp
+        out.append({"when": when, "report": report})
+    return out
+
+
 def helper_actions() -> dict:
     """What the helper says it would run, read from the helper itself.
 
@@ -165,6 +193,7 @@ class GuardWindow(Adw.ApplicationWindow):
             ("full-scan", lambda *_: self.run_scan(privileged=True)),
             ("haiku-scan", lambda *_: self.run_scan(model="claude-haiku-4-5")),
             ("what-gets-read", lambda *_: self.nav.push(self._what_is_read_page())),
+            ("history", lambda *_: self.nav.push(self._history_page())),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", cb)
@@ -174,6 +203,7 @@ class GuardWindow(Adw.ApplicationWindow):
         menu.append("Full scan…", "win.full-scan")
         menu.append("Quick scan with Haiku", "win.haiku-scan")
         menu.append("What gets read…", "win.what-gets-read")
+        menu.append("Scan history", "win.history")
 
         self.scan_btn = Adw.SplitButton(label="Scan now", menu_model=menu)
         self.scan_btn.connect("clicked", lambda _b: self.run_scan())
@@ -201,7 +231,7 @@ class GuardWindow(Adw.ApplicationWindow):
         self.timer_label.add_css_class("caption")
         self.timer_btn = Gtk.Button(valign=Gtk.Align.CENTER)
         self.timer_btn.add_css_class("flat")
-        self.timer_btn.connect("clicked", lambda _b: self._timer_help())
+        self.timer_btn.connect("clicked", lambda _b: self._timer_action())
         self.timer_bar = Gtk.Box(spacing=10, margin_top=6, margin_bottom=6,
                                  margin_start=14, margin_end=8)
         self.timer_bar.append(self.timer_icon)
@@ -232,14 +262,36 @@ class GuardWindow(Adw.ApplicationWindow):
             self.timer_btn.set_visible(True)
             self.timer_btn.set_label(
                 "Run it now" if status["installed"] else "Set it up…")
-        self._timer_cmd = ("sudo systemctl start claude-guard.service"
-                           if status["installed"]
-                           else "cd ~/Desktop/claude-guard && sudo ./install-timer.sh")
+        self._timer_installed = status["installed"]
+        self._timer_cmd = "cd ~/Desktop/claude-guard && sudo ./install-timer.sh"
+
+    def _timer_action(self) -> None:
+        """Starting the timer's own unit is an allowlisted helper action.
+
+        Installing it is not, and deliberately so: install-timer.sh lives in a
+        user-writable directory, and running a user-writable script as root
+        would hand away everything the allowlist protects.
+        """
+        if self._timer_installed:
+            self.show_progress("Running the scheduled scan", "")
+            self.set_progress(None, "pkexec claude-guard-helper timer-run-now", "",
+                              "Your desktop is asking for your password.",
+                              "Running the same scan the timer runs.")
+
+            def work():
+                subprocess.run(["pkexec", HELPER, "timer-run-now"], capture_output=True)
+                GLib.idle_add(self.after_timer_run)
+
+            threading.Thread(target=work, daemon=True).start()
+            return
+        self._timer_help()
+
+    def after_timer_run(self) -> bool:
+        self.refresh_timer_label()
+        self.load_cached()
+        return False
 
     def _timer_help(self) -> None:
-        """Phase 1 keeps this informational: installing or starting a system unit
-        is a privileged action, and adding one to the helper is its own decision.
-        """
         dialog = Adw.MessageDialog(
             transient_for=self,
             heading="Run this in a terminal",
@@ -473,6 +525,55 @@ class GuardWindow(Adw.ApplicationWindow):
         buttons.append(full)
         box.append(buttons)
         return box
+
+    def _history_page(self) -> Adw.NavigationPage:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16,
+                      margin_top=20, margin_bottom=20, margin_start=20, margin_end=20)
+        entries = read_history()
+
+        if not entries:
+            box.append(Adw.StatusPage(
+                icon_name="document-open-recent-symbolic",
+                title="No past scans",
+                description="The daily timer keeps its last 30 reports in "
+                            "/var/lib/claude-guard.", vexpand=True))
+        else:
+            box.append(Gtk.Label(
+                label="Kept by the daily timer so you can see how this machine drifts. "
+                      "Selecting one shows it in place of the current report.",
+                xalign=0, wrap=True, css_classes=["dim-label", "caption"]))
+            group = Adw.PreferencesGroup()
+            for entry in entries:
+                r = entry["report"]
+                findings = r.get("findings", [])
+                act = [f for f in findings if f["severity"] in NEEDS_ACTION]
+                overall = r.get("overall", "")
+                row = Adw.ActionRow(
+                    title=entry["when"],
+                    subtitle=f"{len(act)} needing action · {len(findings)} findings",
+                    activatable=True)
+                pill = Gtk.Label(label=OVERALL.get(overall, (overall, ""))[0],
+                                 valign=Gtk.Align.CENTER)
+                pill.add_css_class("cg-pill")
+                pill.add_css_class("cg-info" if overall == "good" else
+                                   "cg-medium" if overall == "needs_attention" else "cg-high")
+                row.add_prefix(pill)
+                row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
+                row.connect("activated", lambda _r, rep=r, w=entry["when"]:
+                            self.show_past(rep, w))
+                group.add(row)
+            box.append(group)
+
+        toolbar = Adw.ToolbarView()
+        toolbar.add_top_bar(Adw.HeaderBar())
+        toolbar.set_content(Gtk.ScrolledWindow(vexpand=True, child=box))
+        return Adw.NavigationPage(title="Scan history", child=toolbar)
+
+    def show_past(self, report: dict, when: str) -> None:
+        self.report = report
+        self.subtitle.set_subtitle(f"Showing the scan from {when}")
+        self.render()
+        self.nav.pop()
 
     # ---------- progress ----------
 

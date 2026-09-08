@@ -63,6 +63,13 @@ Persistent=true
 WantedBy=timers.target
 UNIT
 
+# So the installing user -- and nobody else -- can read their own reports.
+OWNER_GROUP="$(id -gn "${SUDO_USER:-root}")"
+install -d -m 0750 -o root -g "$OWNER_GROUP" /var/lib/claude-guard
+chmod 0640 /var/lib/claude-guard/*.json 2>/dev/null || true
+chgrp "$OWNER_GROUP" /var/lib/claude-guard/*.json 2>/dev/null || true
+echo "Reports in /var/lib/claude-guard are readable by root and group $OWNER_GROUP only."
+
 systemctl daemon-reload
 systemctl enable --now claude-guard.timer
 echo
