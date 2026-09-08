@@ -83,6 +83,12 @@ reworded. A finding recorded as applied that shows up again is badged **came
 back** -- either the fix did not hold or something switched it back on, and both
 are worth knowing. Delete that file to start over.
 
+Findings carry a severity pill in a fixed-width column, so a list is scanned
+down one edge rather than read row by row, and each row states what its fix
+would actually do (`2 privileged actions · systemctl disable --now smbd nmbd`)
+before you open it — read straight off the same mapper that decides whether
+Apply is offered at all.
+
 On first run the app shows a consent panel rather than an empty screen: what the
 two scan modes differ on, the exact commands that will be read (expandable), and
 what cannot happen. That is the only moment where saying what leaves the machine

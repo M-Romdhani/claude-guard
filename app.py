@@ -32,7 +32,7 @@ except ModuleNotFoundError:  # almost always: launched from an activated venv
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 import actions  # noqa: E402
 import decisions  # noqa: E402
@@ -50,6 +50,35 @@ except Exception:
     COLLECTOR_CMD = {}
 
 NEEDS_ACTION = ("critical", "high", "medium")
+
+# Severity pill colours, light and dark, from the redesign's libadwaita palette.
+# GTK CSS has no prefers-color-scheme, so the provider is swapped when the
+# system theme changes instead.
+_PILLS = {
+    "light": {"critical": ("#a51d2d", "rgba(224,27,36,0.20)"),
+              "high":     ("#c64600", "rgba(255,123,99,0.20)"),
+              "medium":   ("#895900", "rgba(245,194,17,0.28)"),
+              "low":      ("#1a5fb4", "rgba(120,174,237,0.25)"),
+              "info":     ("#5e5c64", "rgba(154,153,150,0.25)")},
+    "dark":  {"critical": ("#ff938c", "rgba(224,27,36,0.28)"),
+              "high":     ("#ff7b63", "rgba(224,27,36,0.22)"),
+              "medium":   ("#f8e45c", "rgba(245,194,17,0.20)"),
+              "low":      ("#78aeed", "rgba(53,132,228,0.28)"),
+              "info":     ("#c0bfbc", "rgba(154,153,150,0.20)")},
+}
+VERDICT_ICON = {"good": "security-high-symbolic",
+                "needs_attention": "dialog-warning-symbolic",
+                "at_risk": "dialog-error-symbolic"}
+
+
+def pill_css(dark: bool) -> str:
+    rules = [".cg-pill{font-size:.85em;font-weight:700;padding:2px 9px;"
+             "border-radius:9999px;min-width:52px;}"]
+    for sev, (fg, bg) in _PILLS["dark" if dark else "light"].items():
+        rules.append(f".cg-pill.cg-{sev}{{color:{fg};background:{bg};}}")
+    rules.append(".cg-tag{font-size:.8em;font-weight:700;padding:1px 7px;"
+                 "border-radius:6px;border:1px solid alpha(currentColor,.4);}")
+    return "".join(rules)
 ACCENT = {"critical": "#c01c28", "high": "#ff7b63", "medium": "#f5c211",
           "low": "#78aeed", "info": "#9a9996"}
 OVERALL = {"good": ("Nothing needs your attention", "#33d17a"),
@@ -112,17 +141,27 @@ class GuardWindow(Adw.ApplicationWindow):
     # ---------- pages ----------
 
     def _report_page(self) -> Adw.NavigationPage:
-        self.scan_btn = Gtk.Button(label="Scan now")
+        for name, cb in (
+            ("full-scan", lambda *_: self.run_scan(privileged=True)),
+            ("haiku-scan", lambda *_: self.run_scan(model="claude-haiku-4-5")),
+            ("what-gets-read", lambda *_: self.nav.push(self._what_is_read_page())),
+        ):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", cb)
+            self.add_action(action)
+
+        menu = Gio.Menu()
+        menu.append("Full scan…", "win.full-scan")
+        menu.append("Quick scan with Haiku", "win.haiku-scan")
+        menu.append("What gets read…", "win.what-gets-read")
+
+        self.scan_btn = Adw.SplitButton(label="Scan now", menu_model=menu)
         self.scan_btn.connect("clicked", lambda _b: self.run_scan())
-        self.full_btn = Gtk.Button(label="Full scan…")
-        self.full_btn.set_tooltip_text(
-            "Collects with administrator access so firewall rules and unit state "
-            "are visible. Only the collectors run as root; the API call does not.")
-        self.full_btn.connect("clicked", lambda _b: self.run_scan(privileged=True))
+        # Kept so the existing enable/disable calls still have something to talk to.
+        self.full_btn = self.scan_btn
 
         header = Adw.HeaderBar()
         header.pack_start(self.scan_btn)
-        header.pack_start(self.full_btn)
         self.subtitle = Adw.WindowTitle(title="Claude Guard", subtitle="No scan yet")
         header.set_title_widget(self.subtitle)
 
@@ -137,25 +176,80 @@ class GuardWindow(Adw.ApplicationWindow):
 
         # Permanent, not just on the empty screen: "is the timer actually
         # working" is worth knowing every day, and nothing else surfaces it.
-        self.timer_label = Gtk.Label(xalign=0, wrap=True, margin_top=8, margin_bottom=8,
-                                     margin_start=14, margin_end=14)
+        self.timer_icon = Gtk.Image(icon_name="alarm-symbolic")
+        self.timer_label = Gtk.Label(xalign=0, wrap=True, hexpand=True)
         self.timer_label.add_css_class("caption")
-        self.timer_label.add_css_class("dim-label")
+        self.timer_btn = Gtk.Button(valign=Gtk.Align.CENTER)
+        self.timer_btn.add_css_class("flat")
+        self.timer_btn.connect("clicked", lambda _b: self._timer_help())
+        self.timer_bar = Gtk.Box(spacing=10, margin_top=6, margin_bottom=6,
+                                 margin_start=14, margin_end=8)
+        self.timer_bar.append(self.timer_icon)
+        self.timer_bar.append(self.timer_label)
+        self.timer_bar.append(self.timer_btn)
         self.refresh_timer_label()
 
         toolbar = Adw.ToolbarView()
         toolbar.add_top_bar(header)
         toolbar.add_top_bar(self.banner)
-        toolbar.add_bottom_bar(self.timer_label)
+        toolbar.add_bottom_bar(self.timer_bar)
         toolbar.set_content(scroller)
         return Adw.NavigationPage(title="Claude Guard", child=toolbar)
 
     def refresh_timer_label(self) -> None:
         status = timer_status()
         self.timer_label.set_text(status["text"])
-        self.timer_label.remove_css_class("warning")
-        if not status["installed"] or not status.get("ever"):
-            self.timer_label.add_css_class("warning")
+        healthy = status["installed"] and status.get("ever")
+        for w in (self.timer_label, self.timer_icon):
+            w.remove_css_class("warning")
+            w.remove_css_class("dim-label")
+            w.add_css_class("dim-label" if healthy else "warning")
+        self.timer_icon.set_from_icon_name(
+            "alarm-symbolic" if healthy else "dialog-warning-symbolic")
+        if healthy:
+            self.timer_btn.set_visible(False)
+        else:
+            self.timer_btn.set_visible(True)
+            self.timer_btn.set_label(
+                "Run it now" if status["installed"] else "Set it up…")
+        self._timer_cmd = ("sudo systemctl start claude-guard.service"
+                           if status["installed"]
+                           else "cd ~/Desktop/claude-guard && sudo ./install-timer.sh")
+
+    def _timer_help(self) -> None:
+        """Phase 1 keeps this informational: installing or starting a system unit
+        is a privileged action, and adding one to the helper is its own decision.
+        """
+        dialog = Adw.MessageDialog(
+            transient_for=self,
+            heading="Run this in a terminal",
+            body=f"{self._timer_cmd}\n\nClaude Guard does not run this for you yet — "
+                 "starting or installing a system unit is a privileged action, and it "
+                 "is not one of the actions the helper is allowed to perform.")
+        dialog.add_response("close", "Close")
+        dialog.add_response("copy", "Copy command")
+        dialog.set_response_appearance("copy", Adw.ResponseAppearance.SUGGESTED)
+        dialog.connect("response", lambda _d, r: r == "copy" and
+                       self.get_clipboard().set(self._timer_cmd))
+        dialog.present()
+
+    def _what_is_read_page(self) -> Adw.NavigationPage:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16,
+                      margin_top=20, margin_bottom=20, margin_start=20, margin_end=20)
+        box.append(Gtk.Label(
+            label="Every command below is a fixed argv list in collectors.py. "
+                  "Nothing here is chosen by the model, and none of it writes.",
+            xalign=0, wrap=True))
+        group = Adw.PreferencesGroup()
+        for name, cmd in COLLECTOR_CMD.items():
+            row = Adw.ActionRow(title=cmd, subtitle=f"{name} · read-only")
+            row.add_css_class("monospace")
+            group.add(row)
+        box.append(group)
+        toolbar = Adw.ToolbarView()
+        toolbar.add_top_bar(Adw.HeaderBar())
+        toolbar.set_content(Gtk.ScrolledWindow(vexpand=True, child=box))
+        return Adw.NavigationPage(title="What gets read", child=toolbar)
 
     def _detail_page(self, finding: dict) -> Adw.NavigationPage:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20,
@@ -313,45 +407,71 @@ class GuardWindow(Adw.ApplicationWindow):
     # ---------- progress ----------
 
     def show_progress(self, title: str, note: str) -> None:
-        """Replace the report with a live view of what is happening right now.
+        """A live view of what is happening right now.
 
         A security tool that goes quiet while running privileged commands is
-        unsettling -- you cannot tell working from hung. Collection has real
-        progress to show, so show it.
+        unsettling -- working and hung look identical. Collection has real
+        progress, so it is shown; the interpretation step has none, so the bar
+        pulses rather than inventing some.
         """
         while (child := self.body.get_first_child()) is not None:
             self.body.remove(child)
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14,
-                      margin_top=48, margin_start=24, margin_end=24, valign=Gtk.Align.START)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20,
+                      margin_top=48, margin_start=24, margin_end=24,
+                      valign=Gtk.Align.START)
         self.p_title = Gtk.Label(label=title, xalign=0)
         self.p_title.add_css_class("title-3")
         box.append(self.p_title)
 
-        self.p_bar = Gtk.ProgressBar(show_text=False)
-        box.append(self.p_bar)
+        bar_row = Gtk.Box(spacing=14)
+        self.p_bar = Gtk.ProgressBar(hexpand=True, valign=Gtk.Align.CENTER)
+        bar_row.append(self.p_bar)
+        self.p_count = Gtk.Label(label="")
+        self.p_count.add_css_class("caption")
+        self.p_count.add_css_class("dim-label")
+        self.p_count.add_css_class("numeric")
+        bar_row.append(self.p_count)
+        box.append(bar_row)
 
-        self.p_step = Gtk.Label(label="", xalign=0, wrap=True)
-        self.p_step.add_css_class("monospace")
-        self.p_step.add_css_class("dim-label")
-        box.append(self.p_step)
+        self.p_row = Adw.ActionRow(title="", subtitle="")
+        self.p_row.add_css_class("monospace")
+        self.p_spinner = Gtk.Spinner(valign=Gtk.Align.CENTER)
+        self.p_spinner.start()
+        self.p_row.add_suffix(self.p_spinner)
+        group = Adw.PreferencesGroup()
+        group.add(self.p_row)
+        box.append(group)
 
+        self.p_note_head = Gtk.Label(label="Nothing has been sent yet.", xalign=0, wrap=True)
+        self.p_note_head.add_css_class("heading")
+        box.append(self.p_note_head)
         self.p_note = Gtk.Label(label=note, xalign=0, wrap=True)
         self.p_note.add_css_class("caption")
         self.p_note.add_css_class("dim-label")
         box.append(self.p_note)
         self.body.append(box)
 
-    def set_progress(self, fraction: float | None, step: str, note: str | None = None) -> bool:
+    def set_progress(self, fraction, command: str, counter: str = "",
+                     caption: str | None = None, headline: str | None = None) -> bool:
         if not hasattr(self, "p_bar"):
             return False
         if fraction is None:
             self.p_bar.pulse()
         else:
             self.p_bar.set_fraction(fraction)
-        self.p_step.set_text(step)
-        if note is not None:
-            self.p_note.set_text(note)
+        self.p_count.set_text(counter)
+        self.p_row.set_title(command)
+        if caption is not None:
+            self.p_note.set_text(caption)
+        if headline is not None:
+            self.p_note_head.set_text(headline)
+        return False
+
+    def set_progress_row(self, command: str, name: str) -> bool:
+        if hasattr(self, "p_row"):
+            self.p_row.set_title(command)
+            self.p_row.set_subtitle(f"{name} · read-only")
         return False
 
     def show_steps(self, plan: list) -> None:
@@ -368,10 +488,14 @@ class GuardWindow(Adw.ApplicationWindow):
         group = Adw.PreferencesGroup()
         self.step_rows = []
         for step in plan:
-            row = Adw.ActionRow(title=step.summary)
+            row = Adw.ActionRow(title=step.summary, subtitle=step.action_id)
+            status = Gtk.Label(label="waiting")
+            status.add_css_class("caption")
+            status.add_css_class("dim-label")
             spinner = Gtk.Spinner(valign=Gtk.Align.CENTER)
-            row.add_suffix(spinner)
-            self.step_rows.append((row, spinner))
+            row.add_prefix(spinner)
+            row.add_suffix(status)
+            self.step_rows.append((row, spinner, status))
             group.add(row)
         box.append(group)
 
@@ -385,17 +509,86 @@ class GuardWindow(Adw.ApplicationWindow):
         self.body.append(box)
 
     def mark_step(self, index: int, ok: bool, running_next: bool) -> bool:
-        row, spinner = self.step_rows[index]
+        row, spinner, status = self.step_rows[index]
         spinner.stop()
-        row.remove(spinner)
+        spinner.set_visible(False)
         icon = Gtk.Image(icon_name="object-select-symbolic" if ok else "dialog-error-symbolic")
-        row.add_suffix(icon)
-        row.set_subtitle("done" if ok else "did not complete")
+        icon.add_css_class("success" if ok else "error")
+        row.add_prefix(icon)
+        status.set_text("done" if ok else "did not complete")
         if running_next and index + 1 < len(self.step_rows):
             self.step_rows[index + 1][1].start()
+            self.step_rows[index + 1][2].set_text("waiting for your password")
         return False
 
     # ---------- rendering ----------
+
+    def _pill(self, severity: str) -> Gtk.Widget:
+        """Severity as a badge in a fixed-width column, so a list can be scanned
+        down one edge instead of read row by row."""
+        label = Gtk.Label(label=severity, valign=Gtk.Align.CENTER)
+        label.add_css_class("cg-pill")
+        label.add_css_class(f"cg-{severity}")
+        box = Gtk.Box(valign=Gtk.Align.CENTER, width_request=76)
+        box.append(label)
+        return box
+
+    def _verdict_card(self, overall: str, headline: str, points: list[str]) -> Gtk.Widget:
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        card.add_css_class("card")
+
+        head = Gtk.Box(spacing=16, margin_top=18, margin_bottom=18,
+                       margin_start=18, margin_end=18)
+        icon = Gtk.Image(icon_name=VERDICT_ICON.get(overall, "security-medium-symbolic"),
+                         pixel_size=32, valign=Gtk.Align.START)
+        head.append(icon)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5, hexpand=True)
+        title = Gtk.Label(label=OVERALL.get(overall, (overall, ""))[0], xalign=0)
+        title.add_css_class("title-3")
+        text.append(title)
+        if headline:
+            text.append(Gtk.Label(label=headline, xalign=0, wrap=True))
+        head.append(text)
+        card.append(head)
+
+        if points:
+            card.append(Gtk.Separator())
+            body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=9,
+                           margin_top=14, margin_bottom=16, margin_start=18, margin_end=18)
+            for text_line in points:
+                row = Gtk.Box(spacing=10, valign=Gtk.Align.START)
+                bullet = Gtk.Label(label="\u2022", valign=Gtk.Align.START)
+                bullet.add_css_class("dim-label")
+                row.append(bullet)
+                lab = Gtk.Label(label=text_line, xalign=0, wrap=True, hexpand=True)
+                lab.add_css_class("caption")
+                row.append(lab)
+                body.append(row)
+            card.append(body)
+        return card
+
+    def _finding_row(self, f: dict, badge: str | None) -> Adw.ActionRow:
+        subtitle = GLib.markup_escape_text(f.get("what_it_means", ""))
+        # What the fix actually does, without having to open it. Comes straight
+        # from the same mapper that decides whether Apply is offered at all.
+        cmd = (f.get("fix_command") or "").strip()
+        plan = actions.plan(cmd) if cmd else None
+        if plan:
+            n = len(plan)
+            hint = f"{n} privileged action{'s' if n > 1 else ''} · {cmd}"
+            subtitle += f"\n<tt><small>{GLib.markup_escape_text(hint)}</small></tt>"
+
+        row = Adw.ActionRow(title=f["title"], subtitle=subtitle,
+                            activatable=True, subtitle_lines=3)
+        row.add_prefix(self._pill(f["severity"]))
+        if badge:
+            tag = Gtk.Label(label=badge, valign=Gtk.Align.CENTER)
+            tag.add_css_class("cg-tag")
+            tag.add_css_class("warning" if badge == "came back" else "dim-label")
+            row.add_suffix(tag)
+        row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
+        row.connect("activated", lambda _r, fi=f: self.nav.push(self._detail_page(fi)))
+        return row
 
     def render(self) -> None:
         while (child := self.body.get_first_child()) is not None:
@@ -403,73 +596,52 @@ class GuardWindow(Adw.ApplicationWindow):
 
         r = self.report or {}
         findings = r.get("findings", [])
-        label, colour = OVERALL.get(r.get("overall", ""), ("Unknown", "#9a9996"))
+        headline = r.get("headline") or r.get("summary", "")
+        points = r.get("points") or []
         self.banner.set_revealed(True)
 
         act = [f for f in findings if f["severity"] in NEEDS_ACTION]
         info = [f for f in findings if f["severity"] not in NEEDS_ACTION]
 
-        # Older cached reports carry a single `summary` string.
-        headline = r.get("headline") or r.get("summary", "")
-        points = r.get("points") or []
-
         if not act:
-            self.body.append(Adw.StatusPage(
-                icon_name="security-high-symbolic",
-                title="Nothing needs your attention",
-                description=headline, vexpand=True))
+            # Clean state lists what was verified, not that it passed. "ufw is
+            # active and denying incoming" is checkable; "you're protected" is not.
+            hero = Adw.StatusPage(icon_name="security-high-symbolic",
+                                  title="Nothing needs your attention",
+                                  description=headline)
+            hero.set_vexpand(False)
+            self.body.append(hero)
             if points:
-                self.body.append(self._points(points))
+                group = Adw.PreferencesGroup()
+                for text_line in points:
+                    row = Adw.ActionRow(title=text_line, title_lines=0)
+                    tick = Gtk.Image(icon_name="object-select-symbolic")
+                    tick.add_css_class("success")
+                    row.add_prefix(tick)
+                    group.add(row)
+                self.body.append(group)
         else:
-            head = Gtk.Label(label=label.upper(), xalign=0)
-            head.add_css_class("caption-heading")
-            self.body.append(head)
-            summary = Gtk.Label(label=headline, xalign=0, wrap=True)
-            summary.add_css_class("title-4")
-            self.body.append(summary)
-            if points:
-                self.body.append(self._points(points))
+            self.body.append(self._verdict_card(r.get("overall", ""), headline, points))
+
+        privacy = Gtk.Label(
+            label=f"Your system state is read by {len(COLLECTOR_CMD)} fixed commands and "
+                  "sent to Claude to be interpreted. Nothing is written, and no fix runs "
+                  "until you say so.",
+            xalign=0, wrap=True)
+        privacy.add_css_class("caption")
+        privacy.add_css_class("dim-label")
+        self.body.append(privacy)
 
         badges = decisions.annotate(findings)
-
-        for group_title, items in (
-            (f"{len(act)} need action", act),
-            (f"{len(info)} for information", info),
-        ):
+        for title, items in (("Need action", act), ("For information", info)):
             if not items:
                 continue
-            group = Adw.PreferencesGroup(title=group_title)
+            group = Adw.PreferencesGroup(
+                title=title,
+                description=f"{len(items)} finding{'s' if len(items) > 1 else ''}")
             for f in items:
-                row = Adw.ActionRow(title=f["title"], subtitle=f["what_it_means"],
-                                    activatable=True, subtitle_lines=2)
-                row.add_prefix(dot(f["severity"]))
-                badge = badges.get(decisions.key_for(f))
-                if badge:
-                    # "came back" means a fix was applied and the finding returned --
-                    # either it did not hold or something switched it back on.
-                    tag = Gtk.Label(label=badge)
-                    tag.add_css_class("caption")
-                    tag.add_css_class("warning" if badge == "came back" else "dim-label")
-                    row.add_suffix(tag)
-                row.add_suffix(Gtk.Label(label=f["severity"], css_classes=["dim-label"]))
-                row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
-                row.connect("activated", lambda _r, fi=f: self.nav.push(self._detail_page(fi)))
-                group.add(row)
+                group.add(self._finding_row(f, badges.get(decisions.key_for(f))))
             self.body.append(group)
-
-    def _points(self, points: list[str]) -> Gtk.Widget:
-        """One line per observation. A wall of bold prose is not read; a short
-        list is. Each point stands alone, so order carries no meaning."""
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
-        for text in points:
-            row = Gtk.Box(spacing=10, valign=Gtk.Align.START)
-            bullet = Gtk.Label(label="\u2022", valign=Gtk.Align.START)
-            bullet.add_css_class("dim-label")
-            row.append(bullet)
-            label = Gtk.Label(label=text, xalign=0, wrap=True, hexpand=True)
-            row.append(label)
-            box.append(row)
-        return box
 
     # ---------- actions ----------
 
@@ -498,6 +670,7 @@ class GuardWindow(Adw.ApplicationWindow):
         self.show_steps(plan)
         if self.step_rows:
             self.step_rows[0][1].start()
+            self.step_rows[0][2].set_text("waiting for your password")
 
         def work():
             failures = []
@@ -534,7 +707,7 @@ class GuardWindow(Adw.ApplicationWindow):
         except (OSError, ValueError):
             self.body.append(self._first_run_panel())
 
-    def run_scan(self, privileged: bool = False) -> None:
+    def run_scan(self, privileged: bool = False, model: str | None = None) -> None:
         self.scan_btn.set_sensitive(False)
         self.full_btn.set_sensitive(False)
         self.subtitle.set_subtitle(
@@ -546,12 +719,16 @@ class GuardWindow(Adw.ApplicationWindow):
 
         def work():
             argv = [str(PYTHON), str(HERE / "guard.py"), "--json"]
+            if model:
+                argv += ["--model", model]
             observations = None
             if privileged:
                 # Root collects; this process still makes the API call and parses
                 # the reply, so nothing from the network is parsed with privilege.
-                GLib.idle_add(self.set_progress, None, "pkexec claude-guard-helper collect",
-                              "Waiting for your password.")
+                GLib.idle_add(self.set_progress, None,
+                              "pkexec claude-guard-helper collect", "",
+                              "Your desktop is asking for your password.",
+                              "Nothing has been sent yet.")
                 collected = subprocess.run(["pkexec", HELPER, "collect"],
                                            capture_output=True, text=True)
                 if collected.returncode != 0:
@@ -575,12 +752,16 @@ class GuardWindow(Adw.ApplicationWindow):
                         counter, name = line.split(None, 2)[1:]
                         done, total = (int(x) for x in counter.split("/"))
                         GLib.idle_add(self.set_progress, done / total,
-                                      COLLECTOR_CMD.get(name, name),
-                                      f"{done} of {total} read-only commands. Nothing has been sent yet.")
+                                      COLLECTOR_CMD.get(name, name), f"{done} / {total}",
+                                      "The collected output goes to Claude only once "
+                                      f"all {total} commands have finished.",
+                                      "Nothing has been sent yet.")
+                        GLib.idle_add(self.set_progress_row,
+                                      COLLECTOR_CMD.get(name, name), name)
                     elif line.startswith("@@PHASE analysing"):
-                        GLib.idle_add(self.set_progress, None, "",
-                                      "Sending the collected output to claude-opus-5 "
-                                      "and waiting for its reading of it.")
+                        GLib.idle_add(self.set_progress, None, "", "",
+                                      "Waiting for its reading of the collected output.",
+                                      "Sent to Claude.")
                 proc.wait()
                 out.seek(0)
                 stdout = out.read()
@@ -606,8 +787,19 @@ class GuardWindow(Adw.ApplicationWindow):
 class GuardApp(Adw.Application):
     def __init__(self):
         super().__init__(application_id="org.claudeguard.App")
+        self._css = Gtk.CssProvider()
+
+    def _apply_css(self, *_args) -> None:
+        dark = Adw.StyleManager.get_default().get_dark()
+        self._css.load_from_data(pill_css(dark), -1)
 
     def do_activate(self):
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), self._css,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        manager = Adw.StyleManager.get_default()
+        manager.connect("notify::dark", self._apply_css)
+        self._apply_css()
         (self.props.active_window or GuardWindow(self)).present()
 
 
